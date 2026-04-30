@@ -7,9 +7,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import scipy
-import seaborn as sns
 from numpy import inf
 from scipy import sparse
+
+try:
+    import seaborn as sns
+except ModuleNotFoundError:  # pragma: no cover - depends on optional plotting extras
+    sns = None
 
 np.random.seed(0)
 

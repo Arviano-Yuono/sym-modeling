@@ -102,7 +102,11 @@ class DolfinxApiTests(unittest.TestCase):
         self.assertEqual(config.traction_boundary_tag, 9)
 
     def test_read_msh_physical_names(self):
-        names = read_msh_physical_names("dataset/fem_data/plate_hole_fenics/mesh/mesh.msh")
+        mesh_path = Path("dataset/fem_data/plate_hole_fenics/mesh/mesh.msh")
+        if not mesh_path.exists():
+            self.skipTest(f"local mesh fixture is not available: {mesh_path}")
+
+        names = read_msh_physical_names(mesh_path)
         self.assertEqual(names[(1, 7)], "left")
         self.assertEqual(names[(1, 9)], "right")
         self.assertEqual(names[(2, 11)], "surface")
