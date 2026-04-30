@@ -1,0 +1,57 @@
+{
+  "run": {
+    "run_name": "sparta_ar_1_180",
+    "output_root": "output/sparta_runs",
+    "artifacts_subdir": "artifacts",
+    "plots_subdir": "plots",
+    "logs_subdir": "logs",
+    "cases_subdir": "cases",
+    "use_timestamp_subdir": true
+  },
+  "data": {
+    "dns_case_path": "dataset/reference/AR_1_180",
+    "baseline_case_path": "dataset/baseline/AR_1_180",
+    "frozen_case_path": "dataset/test-baseline/frozenAR_1_180",
+    "baseline_time": "3000",
+    "frozen_time": "3000",
+    "sample_location": "point",
+    "streamwise_average": true,
+    "streamwise_yz_atol": 1e-10,
+    "baseline_loader_fields": ["U", "k", "omega"],
+    "frozen_loader_fields": ["U", "omega", "residual", "Rij"],
+    "frozen_field_map": {
+      "residual": "R",
+      "Rij": "bDelta"
+    },
+    "interpolation_method": "cubic"
+  },
+  "training": {
+    "library_max_degree": 2,
+    "candidate_threshold": 100000.0,
+    "sparse_model_type": "elasticnet",
+    "b_model_kwargs": {
+      "alpha": 1.0
+    },
+    "r_model_kwargs": {
+      "alpha": 0.2
+    }
+  },
+  "prediction": {
+    "enabled": true,
+    "run_baseline_reference": true,
+    "output_case_path": null,
+    "solver_executable": "simpleFoam",
+    "solver_timeout_seconds": 0,
+    "turbulence_library": "libkOmegaSSTA.so",
+    "turbulence_model": "kOmegaSSTA",
+    "baseline_turbulence_model": "kOmegaSST",
+    "model_expression_filename": "modelExpression.H",
+    "residual_expression_filename": "RModelExpression.H"
+  },
+  "evaluation": {
+    "enabled": true,
+    "metrics": ["mae", "rmse"],
+    "save_plots": true,
+    "reference_source": "dns"
+  }
+}
