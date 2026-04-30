@@ -1,0 +1,22 @@
+name: sym-modeling-fenicsx
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - fenics-dolfinx
+  - mpich
+  - ipykernel
+  - jupyterlab
+  - matplotlib
+  - numpy
+  - pandas
+  - scikit-learn
+  - scipy
+  - pytest
+  - pip
+  - pyvista
+  - imageio
+  - torch
+  - seaborn
+  - pip:
+      - -e .
