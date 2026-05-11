@@ -26,5 +26,9 @@ dist/
 *:Zone.Identifier
 
 output/
-dataset/
+dataset/*
+!dataset/fem_data/
+dataset/fem_data/*
+!dataset/fem_data/plate_hole_fenics/
+!dataset/fem_data/plate_hole_fenics/**
 generated/
