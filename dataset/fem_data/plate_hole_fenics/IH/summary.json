@@ -1,0 +1,372 @@
+{
+  "config": {
+    "material_model": "IH",
+    "output_root": "dataset/fem_data/plate_hole_fenics",
+    "output_dir": "dataset/fem_data/plate_hole_fenics/IH",
+    "load_steps": null,
+    "input_msh_path": "dataset/fem_data/plate_hole_fenics/mesh/mesh_3k.msh",
+    "outer_size": 1.0,
+    "hole_radius": 0.1,
+    "mesh_gdim": 2,
+    "mesh_size_hole": 0.003,
+    "mesh_size_outer": 0.02,
+    "refine_dist_min": 0.08,
+    "refine_dist_max": 0.35,
+    "quadrature_degree": 4,
+    "solver_atol": 1e-12,
+    "solver_rtol": 1e-12,
+    "solver_max_it": 50,
+    "solver_linesearch_type": "bt",
+    "initial_load_subdivisions": 1,
+    "max_load_subdivisions": 32,
+    "save_debug_fields": true,
+    "use_comm_self": true,
+    "left_tag": 7,
+    "bottom_tag": 10,
+    "right_tag": 9,
+    "top_tag": 8,
+    "hole_tag": 6,
+    "domain_tag": 11
+  },
+  "mesh_info": {
+    "num_nodes": 3010,
+    "num_cells": 5820,
+    "cell_type": "triangle",
+    "gdim": 2,
+    "cell_tag": 11,
+    "boundary_tags": {
+      "LEFT": 7,
+      "BOTTOM": 10,
+      "RIGHT": 9,
+      "TOP": 8,
+      "HOLE": 6
+    },
+    "mesh_msh_path": "dataset/fem_data/plate_hole_fenics/IH/quarter_plate_hole.msh",
+    "mesh_source": "provided"
+  },
+  "load_steps": [
+    0.1,
+    0.2,
+    0.30000000000000004,
+    0.4,
+    0.5,
+    0.6000000000000001,
+    0.7000000000000001,
+    0.8
+  ],
+  "reactions": {
+    "Rx_right": [
+      -0.5055859032220803,
+      -1.1345846328566713,
+      -1.8872135375765526,
+      -2.7658836386377232,
+      -3.7731303354181054,
+      -4.910970433988788,
+      -6.1808151722224265,
+      -7.583433394164002
+    ],
+    "Ry_top": [
+      -0.7313554221553931,
+      -1.4820261608606222,
+      -2.280181481121239,
+      -3.1427690028360016,
+      -4.079894720291284,
+      -5.097656276419606,
+      -6.199848707079785,
+      -7.388902224154654
+    ],
+    "Rx_left": [
+      0.5055859032220871,
+      1.1345846328566795,
+      1.8872135375765535,
+      2.765883638637724,
+      3.773130335418106,
+      4.910970433988787,
+      6.180815172222426,
+      7.583433394163999
+    ],
+    "Ry_bottom": [
+      0.7313554221565809,
+      1.4820261608606242,
+      2.280181481121239,
+      3.142769002836001,
+      4.079894720291283,
+      5.0976562764196025,
+      6.199848707079787,
+      7.388902224154653
+    ]
+  },
+  "bc_forces": {
+    "left_x_id1": [
+      -0.5055859032220871,
+      -1.1345846328566795,
+      -1.8872135375765535,
+      -2.765883638637724,
+      -3.773130335418106,
+      -4.910970433988787,
+      -6.180815172222426,
+      -7.583433394163999
+    ],
+    "right_x_id2": [
+      0.5055859032220803,
+      1.1345846328566713,
+      1.8872135375765526,
+      2.7658836386377232,
+      3.7731303354181054,
+      4.910970433988788,
+      6.1808151722224265,
+      7.583433394164002
+    ],
+    "bottom_y_id3": [
+      -0.7313554221565809,
+      -1.4820261608606242,
+      -2.280181481121239,
+      -3.142769002836001,
+      -4.079894720291283,
+      -5.0976562764196025,
+      -6.199848707079787,
+      -7.388902224154653
+    ],
+    "top_y_id4": [
+      0.7313554221553931,
+      1.4820261608606222,
+      2.280181481121239,
+      3.1427690028360016,
+      4.079894720291284,
+      5.097656276419606,
+      6.199848707079785,
+      7.388902224154654
+    ]
+  },
+  "newton_iterations": [
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4
+  ],
+  "load_substeps": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "converged": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+  ],
+  "max_displacement": [
+    0.1118033988749895,
+    0.223606797749979,
+    0.3354101966249685,
+    0.447213595499958,
+    0.5590169943749475,
+    0.670820393249937,
+    0.7826237921249265,
+    0.894427190999916
+  ],
+  "jacobian_min": [
+    1.1042247907510423,
+    1.2452181773725834,
+    1.4283089091869388,
+    1.6356385203134314,
+    1.8148788157350473,
+    1.9896712102013772,
+    2.1693902871605446,
+    2.352401565397134
+  ],
+  "checks": {
+    "mesh_has_all_boundary_tags": true,
+    "solver_converged_all_steps": true,
+    "displacement_monotonic_increasing": true,
+    "reaction_magnitude_monotonic_increasing": true,
+    "jacobian_positive_everywhere": true
+  },
+  "files": {
+    "output_dir": "dataset/fem_data/plate_hole_fenics/IH",
+    "step_directories": [
+      "dataset/fem_data/plate_hole_fenics/IH/10",
+      "dataset/fem_data/plate_hole_fenics/IH/20",
+      "dataset/fem_data/plate_hole_fenics/IH/30",
+      "dataset/fem_data/plate_hole_fenics/IH/40",
+      "dataset/fem_data/plate_hole_fenics/IH/50",
+      "dataset/fem_data/plate_hole_fenics/IH/60",
+      "dataset/fem_data/plate_hole_fenics/IH/70",
+      "dataset/fem_data/plate_hole_fenics/IH/80"
+    ],
+    "step_files": [
+      {
+        "nodes_csv": "dataset/fem_data/plate_hole_fenics/IH/10/output_nodes.csv",
+        "elements_csv": "dataset/fem_data/plate_hole_fenics/IH/10/output_elements.csv",
+        "integrator_csv": "dataset/fem_data/plate_hole_fenics/IH/10/output_integrator.csv",
+        "reactions_csv": "dataset/fem_data/plate_hole_fenics/IH/10/output_reactions.csv"
+      },
+      {
+        "nodes_csv": "dataset/fem_data/plate_hole_fenics/IH/20/output_nodes.csv",
+        "elements_csv": "dataset/fem_data/plate_hole_fenics/IH/20/output_elements.csv",
+        "integrator_csv": "dataset/fem_data/plate_hole_fenics/IH/20/output_integrator.csv",
+        "reactions_csv": "dataset/fem_data/plate_hole_fenics/IH/20/output_reactions.csv"
+      },
+      {
+        "nodes_csv": "dataset/fem_data/plate_hole_fenics/IH/30/output_nodes.csv",
+        "elements_csv": "dataset/fem_data/plate_hole_fenics/IH/30/output_elements.csv",
+        "integrator_csv": "dataset/fem_data/plate_hole_fenics/IH/30/output_integrator.csv",
+        "reactions_csv": "dataset/fem_data/plate_hole_fenics/IH/30/output_reactions.csv"
+      },
+      {
+        "nodes_csv": "dataset/fem_data/plate_hole_fenics/IH/40/output_nodes.csv",
+        "elements_csv": "dataset/fem_data/plate_hole_fenics/IH/40/output_elements.csv",
+        "integrator_csv": "dataset/fem_data/plate_hole_fenics/IH/40/output_integrator.csv",
+        "reactions_csv": "dataset/fem_data/plate_hole_fenics/IH/40/output_reactions.csv"
+      },
+      {
+        "nodes_csv": "dataset/fem_data/plate_hole_fenics/IH/50/output_nodes.csv",
+        "elements_csv": "dataset/fem_data/plate_hole_fenics/IH/50/output_elements.csv",
+        "integrator_csv": "dataset/fem_data/plate_hole_fenics/IH/50/output_integrator.csv",
+        "reactions_csv": "dataset/fem_data/plate_hole_fenics/IH/50/output_reactions.csv"
+      },
+      {
+        "nodes_csv": "dataset/fem_data/plate_hole_fenics/IH/60/output_nodes.csv",
+        "elements_csv": "dataset/fem_data/plate_hole_fenics/IH/60/output_elements.csv",
+        "integrator_csv": "dataset/fem_data/plate_hole_fenics/IH/60/output_integrator.csv",
+        "reactions_csv": "dataset/fem_data/plate_hole_fenics/IH/60/output_reactions.csv"
+      },
+      {
+        "nodes_csv": "dataset/fem_data/plate_hole_fenics/IH/70/output_nodes.csv",
+        "elements_csv": "dataset/fem_data/plate_hole_fenics/IH/70/output_elements.csv",
+        "integrator_csv": "dataset/fem_data/plate_hole_fenics/IH/70/output_integrator.csv",
+        "reactions_csv": "dataset/fem_data/plate_hole_fenics/IH/70/output_reactions.csv"
+      },
+      {
+        "nodes_csv": "dataset/fem_data/plate_hole_fenics/IH/80/output_nodes.csv",
+        "elements_csv": "dataset/fem_data/plate_hole_fenics/IH/80/output_elements.csv",
+        "integrator_csv": "dataset/fem_data/plate_hole_fenics/IH/80/output_integrator.csv",
+        "reactions_csv": "dataset/fem_data/plate_hole_fenics/IH/80/output_reactions.csv"
+      }
+    ],
+    "displacement_xdmf": "dataset/fem_data/plate_hole_fenics/IH/displacement.xdmf",
+    "debug_xdmf": "dataset/fem_data/plate_hole_fenics/IH/debug_fields.xdmf",
+    "reactions_csv": "dataset/fem_data/plate_hole_fenics/IH/reactions.csv",
+    "summary_json": "dataset/fem_data/plate_hole_fenics/IH/summary.json",
+    "mesh_msh": "dataset/fem_data/plate_hole_fenics/IH/quarter_plate_hole.msh"
+  },
+  "rows": [
+    {
+      "load_step": 1,
+      "delta": 0.1,
+      "load_substeps": 1,
+      "Rx_right": -0.5055859032220803,
+      "Ry_top": -0.7313554221553931,
+      "Rx_left": 0.5055859032220871,
+      "Ry_bottom": 0.7313554221565809,
+      "converged": true,
+      "newton_iterations": 4,
+      "max_displacement": 0.1118033988749895,
+      "J_min": 1.1042247907510423
+    },
+    {
+      "load_step": 2,
+      "delta": 0.2,
+      "load_substeps": 1,
+      "Rx_right": -1.1345846328566713,
+      "Ry_top": -1.4820261608606222,
+      "Rx_left": 1.1345846328566795,
+      "Ry_bottom": 1.4820261608606242,
+      "converged": true,
+      "newton_iterations": 4,
+      "max_displacement": 0.223606797749979,
+      "J_min": 1.2452181773725834
+    },
+    {
+      "load_step": 3,
+      "delta": 0.30000000000000004,
+      "load_substeps": 1,
+      "Rx_right": -1.8872135375765526,
+      "Ry_top": -2.280181481121239,
+      "Rx_left": 1.8872135375765535,
+      "Ry_bottom": 2.280181481121239,
+      "converged": true,
+      "newton_iterations": 4,
+      "max_displacement": 0.3354101966249685,
+      "J_min": 1.4283089091869388
+    },
+    {
+      "load_step": 4,
+      "delta": 0.4,
+      "load_substeps": 1,
+      "Rx_right": -2.7658836386377232,
+      "Ry_top": -3.1427690028360016,
+      "Rx_left": 2.765883638637724,
+      "Ry_bottom": 3.142769002836001,
+      "converged": true,
+      "newton_iterations": 4,
+      "max_displacement": 0.447213595499958,
+      "J_min": 1.6356385203134314
+    },
+    {
+      "load_step": 5,
+      "delta": 0.5,
+      "load_substeps": 1,
+      "Rx_right": -3.7731303354181054,
+      "Ry_top": -4.079894720291284,
+      "Rx_left": 3.773130335418106,
+      "Ry_bottom": 4.079894720291283,
+      "converged": true,
+      "newton_iterations": 4,
+      "max_displacement": 0.5590169943749475,
+      "J_min": 1.8148788157350473
+    },
+    {
+      "load_step": 6,
+      "delta": 0.6000000000000001,
+      "load_substeps": 1,
+      "Rx_right": -4.910970433988788,
+      "Ry_top": -5.097656276419606,
+      "Rx_left": 4.910970433988787,
+      "Ry_bottom": 5.0976562764196025,
+      "converged": true,
+      "newton_iterations": 4,
+      "max_displacement": 0.670820393249937,
+      "J_min": 1.9896712102013772
+    },
+    {
+      "load_step": 7,
+      "delta": 0.7000000000000001,
+      "load_substeps": 1,
+      "Rx_right": -6.1808151722224265,
+      "Ry_top": -6.199848707079785,
+      "Rx_left": 6.180815172222426,
+      "Ry_bottom": 6.199848707079787,
+      "converged": true,
+      "newton_iterations": 4,
+      "max_displacement": 0.7826237921249265,
+      "J_min": 2.1693902871605446
+    },
+    {
+      "load_step": 8,
+      "delta": 0.8,
+      "load_substeps": 1,
+      "Rx_right": -7.583433394164002,
+      "Ry_top": -7.388902224154654,
+      "Rx_left": 7.583433394163999,
+      "Ry_bottom": 7.388902224154653,
+      "converged": true,
+      "newton_iterations": 4,
+      "max_displacement": 0.894427190999916,
+      "J_min": 2.352401565397134
+    }
+  ]
+}

@@ -1,0 +1,304 @@
+<?xml version="1.0"?>
+<!DOCTYPE Xdmf SYSTEM "Xdmf.dtd" []>
+<Xdmf Version="3.0" xmlns:xi="https://www.w3.org/2001/XInclude">
+  <Domain>
+    <Grid Name="mesh" GridType="Uniform">
+      <Topology TopologyType="Triangle" NumberOfElements="5820" NodesPerElement="3">
+        <DataItem Dimensions="5820 3" NumberType="Int" Format="HDF">debug_fields.h5:/Mesh/mesh/topology</DataItem>
+      </Topology>
+      <Geometry GeometryType="XY">
+        <DataItem Dimensions="3010 2" Format="HDF">debug_fields.h5:/Mesh/mesh/geometry</DataItem>
+      </Geometry>
+    </Grid>
+    <Grid Name="J" GridType="Collection" CollectionType="Temporal">
+      <Grid Name="J" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.10000000000000001" />
+        <Attribute Name="J" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/J/0_10000000000000001</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="J" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.20000000000000001" />
+        <Attribute Name="J" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/J/0_20000000000000001</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="J" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.30000000000000004" />
+        <Attribute Name="J" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/J/0_30000000000000004</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="J" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.40000000000000002" />
+        <Attribute Name="J" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/J/0_40000000000000002</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="J" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.5" />
+        <Attribute Name="J" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/J/0_5</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="J" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.60000000000000009" />
+        <Attribute Name="J" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/J/0_60000000000000009</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="J" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.70000000000000007" />
+        <Attribute Name="J" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/J/0_70000000000000007</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="J" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.80000000000000004" />
+        <Attribute Name="J" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/J/0_80000000000000004</DataItem>
+        </Attribute>
+      </Grid>
+    </Grid>
+    <Grid Name="I1_bar" GridType="Collection" CollectionType="Temporal">
+      <Grid Name="I1_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.10000000000000001" />
+        <Attribute Name="I1_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I1_bar/0_10000000000000001</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I1_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.20000000000000001" />
+        <Attribute Name="I1_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I1_bar/0_20000000000000001</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I1_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.30000000000000004" />
+        <Attribute Name="I1_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I1_bar/0_30000000000000004</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I1_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.40000000000000002" />
+        <Attribute Name="I1_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I1_bar/0_40000000000000002</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I1_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.5" />
+        <Attribute Name="I1_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I1_bar/0_5</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I1_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.60000000000000009" />
+        <Attribute Name="I1_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I1_bar/0_60000000000000009</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I1_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.70000000000000007" />
+        <Attribute Name="I1_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I1_bar/0_70000000000000007</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I1_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.80000000000000004" />
+        <Attribute Name="I1_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I1_bar/0_80000000000000004</DataItem>
+        </Attribute>
+      </Grid>
+    </Grid>
+    <Grid Name="I2_bar" GridType="Collection" CollectionType="Temporal">
+      <Grid Name="I2_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.10000000000000001" />
+        <Attribute Name="I2_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I2_bar/0_10000000000000001</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I2_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.20000000000000001" />
+        <Attribute Name="I2_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I2_bar/0_20000000000000001</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I2_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.30000000000000004" />
+        <Attribute Name="I2_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I2_bar/0_30000000000000004</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I2_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.40000000000000002" />
+        <Attribute Name="I2_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I2_bar/0_40000000000000002</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I2_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.5" />
+        <Attribute Name="I2_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I2_bar/0_5</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I2_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.60000000000000009" />
+        <Attribute Name="I2_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I2_bar/0_60000000000000009</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I2_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.70000000000000007" />
+        <Attribute Name="I2_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I2_bar/0_70000000000000007</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I2_bar" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.80000000000000004" />
+        <Attribute Name="I2_bar" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I2_bar/0_80000000000000004</DataItem>
+        </Attribute>
+      </Grid>
+    </Grid>
+    <Grid Name="I3" GridType="Collection" CollectionType="Temporal">
+      <Grid Name="I3" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.10000000000000001" />
+        <Attribute Name="I3" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I3/0_10000000000000001</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I3" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.20000000000000001" />
+        <Attribute Name="I3" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I3/0_20000000000000001</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I3" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.30000000000000004" />
+        <Attribute Name="I3" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I3/0_30000000000000004</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I3" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.40000000000000002" />
+        <Attribute Name="I3" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I3/0_40000000000000002</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I3" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.5" />
+        <Attribute Name="I3" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I3/0_5</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I3" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.60000000000000009" />
+        <Attribute Name="I3" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I3/0_60000000000000009</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I3" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.70000000000000007" />
+        <Attribute Name="I3" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I3/0_70000000000000007</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="I3" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.80000000000000004" />
+        <Attribute Name="I3" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/I3/0_80000000000000004</DataItem>
+        </Attribute>
+      </Grid>
+    </Grid>
+    <Grid Name="W" GridType="Collection" CollectionType="Temporal">
+      <Grid Name="W" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.10000000000000001" />
+        <Attribute Name="W" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/W/0_10000000000000001</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="W" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.20000000000000001" />
+        <Attribute Name="W" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/W/0_20000000000000001</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="W" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.30000000000000004" />
+        <Attribute Name="W" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/W/0_30000000000000004</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="W" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.40000000000000002" />
+        <Attribute Name="W" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/W/0_40000000000000002</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="W" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.5" />
+        <Attribute Name="W" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/W/0_5</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="W" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.60000000000000009" />
+        <Attribute Name="W" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/W/0_60000000000000009</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="W" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.70000000000000007" />
+        <Attribute Name="W" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/W/0_70000000000000007</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="W" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0.80000000000000004" />
+        <Attribute Name="W" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="5820 1" Format="HDF">debug_fields.h5:/Function/W/0_80000000000000004</DataItem>
+        </Attribute>
+      </Grid>
+    </Grid>
+  </Domain>
+</Xdmf>
