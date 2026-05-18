@@ -33,7 +33,34 @@ class CandidateRecord:
     candidate: CandidateModel
     aicc: float
     rmse: float
+    active_terms: int
+    complexity: int
     gene_fitness: np.ndarray
+
+
+def selection_rank(
+    selection_objective: str,
+    aicc: float,
+    rmse: float,
+    active_terms: int,
+    complexity: int,
+    active_terms_epsilon: int,
+) -> tuple:
+    """Return the candidate ordering key used by SGEP selection."""
+    if selection_objective == "aicc":
+        return (float(aicc), float(rmse))
+    if selection_objective != "epsilon_rmse":
+        raise ValueError("Unsupported selection objective: %s" % selection_objective)
+
+    rmse_value = float(rmse)
+    active_count = int(active_terms)
+    complexity_value = int(complexity)
+    epsilon = int(active_terms_epsilon)
+    if not np.isfinite(rmse_value):
+        return (2, float("inf"), active_count, complexity_value)
+    if active_count <= epsilon:
+        return (0, rmse_value, active_count, complexity_value)
+    return (1, active_count - epsilon, rmse_value, complexity_value)
 
 
 class PopulationEngine:
@@ -53,6 +80,8 @@ class PopulationEngine:
         elite_gene_count: int = 4,
         unary_operators: Sequence[str] = ("neg", "square", "sqrt", "log", "exp", "sin", "cos"),
         binary_operators: Sequence[str] = ("add", "sub", "mul", "div"),
+        selection_objective: str = "epsilon_rmse",
+        active_terms_epsilon: int = 2,
     ) -> None:
         self.variable_names = tuple(variable_names)
         self.genes_per_model = int(genes_per_model)
@@ -66,6 +95,8 @@ class PopulationEngine:
         self.elite_gene_count = int(elite_gene_count)
         self.unary_operators = tuple(unary_operators)
         self.binary_operators = tuple(binary_operators)
+        self.selection_objective = str(selection_objective)
+        self.active_terms_epsilon = int(active_terms_epsilon)
 
     @property
     def population_size(self) -> int:
@@ -109,7 +140,17 @@ class PopulationEngine:
         ]
 
     def next_population(self, records: Sequence[CandidateRecord]) -> list[Gene]:
-        ordered = sorted(records, key=lambda record: (record.aicc, record.rmse))
+        ordered = sorted(
+            records,
+            key=lambda record: selection_rank(
+                self.selection_objective,
+                record.aicc,
+                record.rmse,
+                record.active_terms,
+                record.complexity,
+                self.active_terms_epsilon,
+            ),
+        )
         next_genes: list[Gene] = []
 
         for record in ordered[: self.elite_model_count]:

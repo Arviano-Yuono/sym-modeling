@@ -3,21 +3,35 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Sequence
+from types import SimpleNamespace
+from time import perf_counter
 
 import numpy as np
 
 from sym_modeling.common.workflow import BaseTrainer
+from sym_modeling.domains.fem.methods.common.lp_solver import apply_penalty_lp_iteration
+from sym_modeling.domains.fem.methods.common.weak_form import (
+    compute_strain_energy,
+    extend_lhs_rhs,
+    weak_residual_vector,
+)
 from sym_modeling.domains.fem.methods.euclid import EuclidConfig, EuclidWorkflow
+from sym_modeling.domains.fem.methods.euclid.constraints import getPathX
 from sym_modeling.domains.fem.methods.euclid.weak_form import computeFirstPiolaTheta
+from sym_modeling.domains.fem.methods.sgep.aic import RegressionMetrics, regression_metrics
 from sym_modeling.domains.fem.methods.sgep.gep_gene import BINARY_OPS, UNARY_OPS, Gene
 from sym_modeling.domains.fem.methods.sgep.gep_population import (
     CandidateModel,
     CandidateRecord,
     PopulationEngine,
+    selection_rank,
 )
 from sym_modeling.domains.fem.methods.sgep.hyperelastic_eval import (
     StressDataset,
     assemble_stress_feature_matrix,
+    build_gene_feature_set_for_fem_data,
+    build_stress_dataset_from_F,
+    gene_feature_values_and_derivatives,
     load_stress_dataset_from_euclid_csv,
     resolve_loadsteps,
     synthetic_neo_hookean_dataset,
@@ -60,6 +74,20 @@ class SGEPConfig:
     derivative_step: float = 1e-6
     invalid_value_limit: float = 1e8
     duplicate_correlation: float = 0.999999
+    fitting_mode: str = "auto"
+    selection_objective: str = "epsilon_rmse"
+    active_terms_epsilon: int = 2
+
+    weak_form_balance: float = 100.0
+    weak_form_penalty_lp: float = 1e-4
+    weak_form_p: float = 1.0 / 4.0
+    weak_form_num_increments: int = 5
+    weak_form_factor_increments: float = 5.0
+    weak_form_num_guesses: int = 1
+    weak_form_num_iterations: int = 200
+    weak_form_threshold_iter: float = 1e-6
+    weak_form_threshold: float = 1e-2
+    weak_form_energy_checks: bool = True
 
     data_dir: str | None = None
     loadsteps: list[int] | None = None
@@ -71,6 +99,7 @@ class SGEPConfig:
 
     output_dir: str = "output/sgep_results"
     save_plots: bool = True
+    progress_log: bool = True
     compare_euclid: bool = False
     euclid_model: str = "NH2"
 
@@ -86,6 +115,18 @@ class SGEPConfig:
             raise ValueError("Unsupported binary operators: %s" % ", ".join(unsupported_binary))
         if not self.unary_operators and not self.binary_operators:
             raise ValueError("At least one unary or binary GEP operator must be enabled.")
+        self.fitting_mode = str(self.fitting_mode).lower()
+        if self.fitting_mode not in {"auto", "weak_form", "direct_stress"}:
+            raise ValueError("fitting_mode must be one of: auto, weak_form, direct_stress.")
+        self.selection_objective = str(self.selection_objective).lower()
+        if self.selection_objective not in {"aicc", "epsilon_rmse"}:
+            raise ValueError("selection_objective must be one of: aicc, epsilon_rmse.")
+        self.active_terms_epsilon = int(self.active_terms_epsilon)
+        if self.active_terms_epsilon < 1:
+            raise ValueError("active_terms_epsilon must be at least 1.")
+        if self.max_elements_per_loadstep is not None:
+            max_elements = int(self.max_elements_per_loadstep)
+            self.max_elements_per_loadstep = max_elements if max_elements > 0 else None
 
 
 @dataclass
@@ -120,16 +161,45 @@ class SGEPWorkflow(BaseTrainer):
     def __init__(self, config: SGEPConfig | None = None):
         self.config = config or SGEPConfig()
         self.dataset: StressDataset | None = None
+        self.fem_datasets: list | None = None
         self.result: SGEPResult | None = None
 
     def _load_dataset(self) -> StressDataset:
+        fitting_mode = self._resolved_fitting_mode()
         if self.config.data_dir is not None:
-            return load_stress_dataset_from_euclid_csv(
-                self.config.data_dir,
-                loadsteps=self.config.loadsteps,
-                max_elements_per_loadstep=self.config.max_elements_per_loadstep,
-                noise_level=self.config.noise_level,
+            if fitting_mode == "direct_stress":
+                self.fem_datasets = None
+                return load_stress_dataset_from_euclid_csv(
+                    self.config.data_dir,
+                    loadsteps=self.config.loadsteps,
+                    max_elements_per_loadstep=self.config.max_elements_per_loadstep,
+                    noise_level=self.config.noise_level,
+                )
+            data_path = Path(self.config.data_dir)
+            steps = list(self.config.loadsteps) if self.config.loadsteps is not None else resolve_loadsteps(data_path)
+            self.fem_datasets = []
+            F_parts = []
+            P_parts = []
+            for step in steps:
+                data = loadFemData(
+                    str(data_path / str(step)),
+                    AD=True,
+                    noiseLevel=self.config.noise_level,
+                    noiseType="displacement",
+                )
+                data.convertToNumpy()
+                self.fem_datasets.append(data)
+                F_parts.append(data.F)
+                if data.P is None:
+                    P_parts.append(np.zeros((data.F.shape[0], 4), dtype=float))
+                else:
+                    P_parts.append(data.P)
+            return build_stress_dataset_from_F(
+                np.vstack(F_parts),
+                np.vstack(P_parts),
+                name=str(data_path),
             )
+        self.fem_datasets = None
         return synthetic_neo_hookean_dataset(
             num_samples=self.config.synthetic_samples,
             seed=self.config.random_seed,
@@ -138,6 +208,11 @@ class SGEPWorkflow(BaseTrainer):
         )
 
     def _fit_candidate(self, candidate: CandidateModel, dataset: StressDataset) -> _Evaluation:
+        if self._resolved_fitting_mode() == "weak_form":
+            return self._fit_candidate_weak(candidate, dataset)
+        return self._fit_candidate_direct(candidate, dataset)
+
+    def _fit_candidate_direct(self, candidate: CandidateModel, dataset: StressDataset) -> _Evaluation:
         X_valid, valid_mask, reasons = assemble_stress_feature_matrix(
             candidate.genes,
             dataset,
@@ -168,6 +243,186 @@ class SGEPWorkflow(BaseTrainer):
             expression=expression,
         )
 
+    def _fit_candidate_weak(self, candidate: CandidateModel, dataset: StressDataset) -> _Evaluation:
+        X_valid, valid_mask, reasons = assemble_stress_feature_matrix(
+            candidate.genes,
+            dataset,
+            self.config.variable_names,
+            derivative_step=self.config.derivative_step,
+            value_limit=self.config.invalid_value_limit,
+            duplicate_correlation=self.config.duplicate_correlation,
+        )
+        valid_genes = tuple(gene for gene, valid in zip(candidate.genes, valid_mask) if valid)
+        weak_config = self._weak_form_config()
+        try:
+            self._attach_sgep_feature_sets(valid_genes)
+            lhs, rhs = self._assemble_weak_system(len(valid_genes), weak_config)
+            theta_valid = apply_penalty_lp_iteration(
+                self.fem_datasets or [],
+                lhs,
+                rhs,
+                weak_config,
+                energy_check=self._sgep_energy_check(valid_genes),
+                verbose=False,
+            )
+        except (ValueError, np.linalg.LinAlgError, FloatingPointError):
+            return self._failed_candidate(candidate, dataset, valid_mask, reasons)
+
+        residual = weak_residual_vector(self.fem_datasets or [], theta_valid, weak_config)
+        active = np.abs(theta_valid) >= self.config.weak_form_threshold
+        metrics = regression_metrics(
+            np.zeros_like(residual),
+            residual,
+            num_parameters=int(np.count_nonzero(active)),
+        )
+        prediction = X_valid @ theta_valid if X_valid.shape[1] else np.zeros_like(dataset.target_vector)
+        fit = SparseFitResult(
+            theta=theta_valid,
+            prediction=prediction,
+            active_mask=active,
+            metrics=metrics,
+            column_scales=np.ones_like(theta_valid),
+        )
+        theta_full = np.zeros(len(candidate.genes), dtype=float)
+        theta_full[valid_mask] = theta_valid
+        gene_fitness = self._weak_ablation_fitness(theta_valid, metrics, valid_mask, weak_config)
+        expression = candidate.expression(theta_full)
+        return _Evaluation(
+            candidate=candidate,
+            fit=fit,
+            theta_full=theta_full,
+            valid_mask=valid_mask,
+            valid_reasons=reasons,
+            gene_fitness=gene_fitness,
+            expression=expression,
+        )
+
+    def _failed_candidate(
+        self,
+        candidate: CandidateModel,
+        dataset: StressDataset,
+        valid_mask: np.ndarray,
+        reasons: list[str],
+    ) -> _Evaluation:
+        metrics = RegressionMetrics(
+            rss=float("inf"),
+            rmse=float("inf"),
+            aic=float("inf"),
+            aicc=float("inf"),
+            num_samples=dataset.target_vector.size,
+            num_parameters=0,
+        )
+        theta_valid = np.zeros(int(np.count_nonzero(valid_mask)), dtype=float)
+        fit = SparseFitResult(
+            theta=theta_valid,
+            prediction=np.zeros_like(dataset.target_vector),
+            active_mask=np.zeros_like(theta_valid, dtype=bool),
+            metrics=metrics,
+            column_scales=np.ones_like(theta_valid),
+        )
+        return _Evaluation(
+            candidate=candidate,
+            fit=fit,
+            theta_full=np.zeros(len(candidate.genes), dtype=float),
+            valid_mask=valid_mask,
+            valid_reasons=reasons,
+            gene_fitness=np.zeros(len(candidate.genes), dtype=float),
+            expression="0",
+        )
+
+    def _weak_form_config(self):
+        return SimpleNamespace(
+            dim=2,
+            numNodesPerElement=3,
+            balance=float(self.config.weak_form_balance),
+            penaltyLp=float(self.config.weak_form_penalty_lp),
+            penaltyLp_init=float(self.config.weak_form_penalty_lp),
+            p=float(self.config.weak_form_p),
+            numIncrements=int(self.config.weak_form_num_increments),
+            factorIncrements=float(self.config.weak_form_factor_increments),
+            numGuesses=int(self.config.weak_form_num_guesses),
+            numIterations=int(self.config.weak_form_num_iterations),
+            lowestCost=-1.0,
+            lowestCostGuessID=-1,
+            threshold_iter=float(self.config.weak_form_threshold_iter),
+            threshold=float(self.config.weak_form_threshold),
+        )
+
+    def _attach_sgep_feature_sets(self, genes: Sequence[Gene]) -> None:
+        for data in self.fem_datasets or []:
+            data.featureSet = build_gene_feature_set_for_fem_data(
+                data,
+                genes,
+                self.config.variable_names,
+                derivative_step=self.config.derivative_step,
+                value_limit=self.config.invalid_value_limit,
+            )
+
+    def _assemble_weak_system(self, num_features: int, weak_config) -> tuple[np.ndarray, np.ndarray]:
+        lhs = np.zeros((num_features, num_features), dtype=float)
+        rhs = np.zeros(num_features, dtype=float)
+        for data in self.fem_datasets or []:
+            lhs, rhs = extend_lhs_rhs(data, weak_config, lhs, rhs, verbose=False)
+        return lhs, rhs
+
+    def _sgep_energy_check(self, genes: Sequence[Gene]):
+        def check(datasets, theta) -> bool:
+            if not self.config.weak_form_energy_checks:
+                return True
+            for data in datasets:
+                energy, _ = compute_strain_energy(data, theta)
+                if energy.size and float(np.min(energy)) < -1e-10:
+                    return False
+
+            for path in ("tension", "bitension", "compression", "bicompression", "simpleShear", "pureShear"):
+                previous = 0.0
+                for x_value in getPathX():
+                    F = self._deformation_path_F(path, x_value)
+                    synthetic = build_stress_dataset_from_F(F, np.zeros((1, 4), dtype=float), name=path)
+                    features, _, _, _ = gene_feature_values_and_derivatives(
+                        genes,
+                        synthetic,
+                        self.config.variable_names,
+                        derivative_step=self.config.derivative_step,
+                        value_limit=self.config.invalid_value_limit,
+                    )
+                    energy = float(features[0, :].dot(theta)) if features.shape[1] else 0.0
+                    if not np.isfinite(energy):
+                        break
+                    if energy < previous - 1e-10:
+                        return False
+                    previous = energy
+            return True
+
+        return check
+
+    @staticmethod
+    def _deformation_path_F(path: str, x_value: float) -> np.ndarray:
+        F = np.zeros((1, 4), dtype=float)
+        if path == "tension":
+            F[:, 0] = x_value
+            F[:, 3] = 1.0
+        elif path == "bitension":
+            F[:, 0] = x_value
+            F[:, 3] = x_value
+        elif path == "compression":
+            F[:, 0] = 1.0 / x_value
+            F[:, 3] = 1.0
+        elif path == "bicompression":
+            F[:, 0] = 1.0 / x_value
+            F[:, 3] = 1.0 / x_value
+        elif path == "simpleShear":
+            F[:, 0] = 1.0
+            F[:, 1] = x_value - 1.0
+            F[:, 3] = 1.0
+        elif path == "pureShear":
+            F[:, 0] = x_value
+            F[:, 3] = 1.0 / x_value
+        else:
+            F[:, 0] = 1.0
+            F[:, 3] = 1.0
+        return F
+
     def _ablation_fitness(
         self,
         X_valid: np.ndarray,
@@ -197,6 +452,32 @@ class SGEPWorkflow(BaseTrainer):
             fitness[gene_idx] = max(0.0, float(delta))
         return fitness
 
+    def _weak_ablation_fitness(
+        self,
+        theta_valid: np.ndarray,
+        base_metrics: RegressionMetrics,
+        valid_mask: np.ndarray,
+        weak_config,
+    ) -> np.ndarray:
+        fitness = np.zeros(valid_mask.shape[0], dtype=float)
+        valid_indices = np.flatnonzero(valid_mask)
+        if theta_valid.size == 0 or not np.isfinite(base_metrics.aicc):
+            return fitness
+        for local_idx, gene_idx in enumerate(valid_indices):
+            if abs(float(theta_valid[local_idx])) < self.config.weak_form_threshold:
+                continue
+            ablated_theta = np.copy(theta_valid)
+            ablated_theta[local_idx] = 0.0
+            residual = weak_residual_vector(self.fem_datasets or [], ablated_theta, weak_config)
+            metrics = regression_metrics(
+                np.zeros_like(residual),
+                residual,
+                num_parameters=max(0, int(np.count_nonzero(theta_valid)) - 1),
+            )
+            if np.isfinite(metrics.aicc):
+                fitness[gene_idx] = max(0.0, float(metrics.aicc - base_metrics.aicc))
+        return fitness
+
     def train(self) -> SGEPResult:
         dataset = self._load_dataset()
         self.dataset = dataset
@@ -213,33 +494,66 @@ class SGEPWorkflow(BaseTrainer):
             elite_gene_count=self.config.elite_gene_count,
             unary_operators=self.config.unary_operators,
             binary_operators=self.config.binary_operators,
+            selection_objective=self.config.selection_objective,
+            active_terms_epsilon=self.config.active_terms_epsilon,
         )
 
         population = engine.initial_population()
         best: _Evaluation | None = None
         history: list[dict] = []
         selected_gene_log: list[dict] = []
+        train_start = perf_counter()
 
         for generation in range(self.config.generations):
-            evaluations = [
-                self._fit_candidate(candidate, dataset)
-                for candidate in engine.group_candidates(population)
-            ]
-            evaluations.sort(key=lambda item: (item.fit.metrics.aicc, item.fit.metrics.rmse))
+            generation_start = perf_counter()
+            candidates = engine.group_candidates(population)
+            self._log_progress(
+                "Generation %d/%d: evaluating %d candidate models with %d genes each (%s)."
+                % (
+                    generation + 1,
+                    self.config.generations,
+                    len(candidates),
+                    self.config.genes_per_model,
+                    self._fitting_mode(),
+                )
+            )
+            evaluations = [self._fit_candidate(candidate, dataset) for candidate in candidates]
+            evaluations.sort(key=self._evaluation_rank)
             generation_best = evaluations[0]
-            if best is None or generation_best.fit.metrics.aicc < best.fit.metrics.aicc:
+            if best is None or self._evaluation_rank(generation_best) < self._evaluation_rank(best):
                 best = generation_best
+            generation_elapsed = perf_counter() - generation_start
+            total_elapsed = perf_counter() - train_start
+            generation_best_active_terms = self._active_terms(generation_best)
 
             history.append(
                 {
                     "generation": generation,
+                    "fitting_mode": self._fitting_mode(),
+                    "selection_objective": self.config.selection_objective,
+                    "active_terms_epsilon": self.config.active_terms_epsilon,
+                    "best_feasible": self._is_epsilon_feasible(generation_best),
+                    "elapsed_seconds": generation_elapsed,
                     "best_rmse": generation_best.fit.metrics.rmse,
                     "best_rss": generation_best.fit.metrics.rss,
                     "best_aicc": generation_best.fit.metrics.aicc,
-                    "best_active_terms": int(np.count_nonzero(generation_best.theta_full)),
+                    "best_active_terms": generation_best_active_terms,
                     "best_expression": generation_best.expression,
                 }
             )
+            self._log_progress(
+                "Generation %d/%d done in %.1fs (total %.1fs): RMSE %.6e, AICc %.6e, active terms %d."
+                % (
+                    generation + 1,
+                    self.config.generations,
+                    generation_elapsed,
+                    total_elapsed,
+                    generation_best.fit.metrics.rmse,
+                    generation_best.fit.metrics.aicc,
+                    generation_best_active_terms,
+                )
+            )
+            self._log_progress("  Best: %s" % generation_best.expression)
             selected_gene_log.extend(self._generation_gene_log(generation, evaluations))
 
             records = [
@@ -247,6 +561,8 @@ class SGEPWorkflow(BaseTrainer):
                     candidate=evaluation.candidate,
                     aicc=evaluation.fit.metrics.aicc,
                     rmse=evaluation.fit.metrics.rmse,
+                    active_terms=self._active_terms(evaluation),
+                    complexity=self._active_complexity(evaluation),
                     gene_fitness=evaluation.gene_fitness,
                 )
                 for evaluation in evaluations
@@ -262,11 +578,13 @@ class SGEPWorkflow(BaseTrainer):
         piola_field_metrics = output_paths.pop("_piola_field_metrics", None)
         piola_field_warnings = output_paths.pop("_piola_field_warnings", None)
         euclid_metrics = self._compare_euclid() if self.config.compare_euclid else None
+        metrics = self._metrics_dict(best.fit)
+        metrics["fitting_mode"] = self._fitting_mode()
         self.result = SGEPResult(
             best_expression=best.expression,
             theta=best.theta_full,
             genes=best.candidate.genes,
-            metrics=self._metrics_dict(best.fit),
+            metrics=metrics,
             history=history,
             selected_gene_log=selected_gene_log,
             output_paths=output_paths,
@@ -277,6 +595,50 @@ class SGEPWorkflow(BaseTrainer):
         )
         self._save_summary(self.result)
         return self.result
+
+    def _fitting_mode(self) -> str:
+        return self._resolved_fitting_mode()
+
+    def _resolved_fitting_mode(self) -> str:
+        if self.config.fitting_mode == "auto":
+            return "weak_form" if self.config.data_dir is not None else "direct_stress"
+        if self.config.fitting_mode == "weak_form" and self.config.data_dir is None:
+            raise ValueError("fitting_mode='weak_form' requires data_dir.")
+        return self.config.fitting_mode
+
+    def _log_progress(self, message: str) -> None:
+        if self.config.progress_log:
+            print("[SGEP] %s" % message, flush=True)
+
+    def _evaluation_rank(self, evaluation: _Evaluation) -> tuple:
+        return selection_rank(
+            self.config.selection_objective,
+            evaluation.fit.metrics.aicc,
+            evaluation.fit.metrics.rmse,
+            self._active_terms(evaluation),
+            self._active_complexity(evaluation),
+            self.config.active_terms_epsilon,
+        )
+
+    @staticmethod
+    def _active_terms(evaluation: _Evaluation) -> int:
+        return int(evaluation.fit.metrics.num_parameters)
+
+    @staticmethod
+    def _active_complexity(evaluation: _Evaluation) -> int:
+        valid_indices = np.flatnonzero(evaluation.valid_mask)
+        if evaluation.fit.active_mask.size == 0:
+            return 0
+        return int(
+            sum(
+                evaluation.candidate.genes[gene_idx].complexity
+                for local_idx, gene_idx in enumerate(valid_indices)
+                if local_idx < evaluation.fit.active_mask.size and bool(evaluation.fit.active_mask[local_idx])
+            )
+        )
+
+    def _is_epsilon_feasible(self, evaluation: _Evaluation) -> bool:
+        return self._active_terms(evaluation) <= self.config.active_terms_epsilon
 
     def _generation_gene_log(
         self,
@@ -344,6 +706,7 @@ class SGEPWorkflow(BaseTrainer):
         payload = {
             "config": asdict(self.config),
             "dataset": self.dataset.name if self.dataset is not None else None,
+            "fitting_mode": self._fitting_mode(),
             "best_expression": result.best_expression,
             "theta": result.theta.tolist(),
             "active_genes": [

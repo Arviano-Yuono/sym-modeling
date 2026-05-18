@@ -30,7 +30,10 @@ def _least_squares(X: np.ndarray, y: np.ndarray, ridge_alpha: float = 0.0) -> np
     if ridge_alpha > 0.0:
         lhs = X.T @ X + ridge_alpha * np.eye(X.shape[1])
         rhs = X.T @ y
-        return np.linalg.solve(lhs, rhs)
+        try:
+            return np.linalg.solve(lhs, rhs)
+        except np.linalg.LinAlgError:
+            return np.linalg.lstsq(lhs, rhs, rcond=None)[0]
     return np.linalg.lstsq(X, y, rcond=None)[0]
 
 

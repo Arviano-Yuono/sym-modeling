@@ -51,17 +51,25 @@ def _apply_cli_overrides(config: SGEPConfig, args: argparse.Namespace) -> SGEPCo
         "genes_per_model": args.genes_per_model,
         "max_depth": args.max_depth,
         "random_seed": args.seed,
-        "max_elements_per_loadstep": args.max_elements_per_loadstep,
         "sparsity_threshold": args.threshold,
         "regression_method": args.regression_method,
+        "fitting_mode": args.fitting_mode,
+        "selection_objective": args.selection_objective,
+        "active_terms_epsilon": args.active_terms_epsilon,
     }
     for key, value in overrides.items():
         if value is not None:
             values[key] = value
+    if args.max_elements_per_loadstep is not None:
+        values["max_elements_per_loadstep"] = args.max_elements_per_loadstep
+    if args.all_elements is True:
+        values["max_elements_per_loadstep"] = None
     if args.skip_plots is True:
         values["save_plots"] = False
     if args.compare_euclid is True:
         values["compare_euclid"] = True
+    if args.quiet is True:
+        values["progress_log"] = False
     return SGEPConfig(**values)
 
 
@@ -76,11 +84,41 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--genes-per-model", type=int, default=None)
     parser.add_argument("--max-depth", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--max-elements-per-loadstep", type=int, default=None)
+    parser.add_argument(
+        "--max-elements-per-loadstep",
+        type=int,
+        default=None,
+        help="Maximum elements sampled per load step for fitting. Use 0 to disable the cap.",
+    )
+    parser.add_argument(
+        "--all-elements",
+        action="store_true",
+        default=False,
+        help="Use every element from every load step, overriding any configured cap.",
+    )
     parser.add_argument("--threshold", type=float, default=None)
     parser.add_argument("--regression-method", default=None)
+    parser.add_argument(
+        "--fitting-mode",
+        choices=("auto", "weak_form", "direct_stress"),
+        default=None,
+        help="Fitting target: auto, weak_form, or direct_stress.",
+    )
+    parser.add_argument(
+        "--selection-objective",
+        choices=("aicc", "epsilon_rmse"),
+        default=None,
+        help="Candidate selection objective.",
+    )
+    parser.add_argument(
+        "--active-terms-epsilon",
+        type=int,
+        default=None,
+        help="Maximum active terms for epsilon_rmse selection.",
+    )
     parser.add_argument("--skip-plots", action="store_true", default=None)
     parser.add_argument("--compare-euclid", action="store_true", default=None)
+    parser.add_argument("--quiet", action="store_true", default=False, help="Disable SGEP progress logs.")
     return parser
 
 

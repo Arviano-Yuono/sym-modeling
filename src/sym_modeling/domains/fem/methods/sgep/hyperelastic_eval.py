@@ -7,6 +7,7 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
+from sym_modeling.domains.fem.data import FeatureSet
 from sym_modeling.domains.fem.io.csv_loader import loadFemData
 from sym_modeling.domains.fem.operators.kinematics import (
     computeCauchyGreenStrain,
@@ -92,7 +93,7 @@ def resolve_loadsteps(data_dir: str | Path) -> list[int]:
 
 
 def _select_rows(array: np.ndarray, max_rows: int | None) -> np.ndarray:
-    if max_rows is None or array.shape[0] <= max_rows:
+    if max_rows is None or max_rows <= 0 or array.shape[0] <= max_rows:
         return array
     indices = np.linspace(0, array.shape[0] - 1, max_rows).astype(int)
     return array[indices]
@@ -188,6 +189,33 @@ def variable_derivatives_wrt_F(
     return {name: values[name] for name in variable_names}
 
 
+def variable_derivatives_wrt_invariants(
+    dataset: StressDataset,
+    variable_names: Sequence[str],
+) -> dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    I1 = dataset.I1
+    I3 = dataset.I3
+    zeros = np.zeros_like(I1)
+    ones = np.ones_like(I1)
+    dK1dI1 = np.power(I3, -1.0 / 3.0)
+    dK1dI3 = (-1.0 / 3.0) * I1 * np.power(I3, -4.0 / 3.0)
+    dK2dI1 = np.power(I3, -2.0 / 3.0)
+    dK2dI3 = np.power(I3, -2.0 / 3.0) - (
+        2.0 / 3.0
+    ) * (I1 + I3 - 1.0) * np.power(I3, -5.0 / 3.0)
+    dJdI3 = 0.5 * np.power(I3, -0.5)
+    values = {
+        "I1": (ones, zeros, zeros),
+        "I2": (zeros, ones, zeros),
+        "I3": (zeros, zeros, ones),
+        "J": (zeros, zeros, dJdI3),
+        "Jm1": (zeros, zeros, dJdI3),
+        "K1": (dK1dI1, zeros, dK1dI3),
+        "K2": (dK2dI1, zeros, dK2dI3),
+    }
+    return {name: values[name] for name in variable_names}
+
+
 def normalized_gene_values(
     gene: Gene,
     variables: Mapping[str, np.ndarray],
@@ -212,6 +240,80 @@ def gene_variable_derivatives(
         minus[name] = base - step
         derivatives[name] = (gene.evaluate(plus) - gene.evaluate(minus)) / (2.0 * step)
     return derivatives
+
+
+def gene_feature_values_and_derivatives(
+    genes: Sequence[Gene],
+    dataset: StressDataset,
+    variable_names: Sequence[str],
+    derivative_step: float = 1e-6,
+    value_limit: float = 1e8,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    variables = invariant_variables(dataset, variable_names)
+    reference = reference_variables(variable_names)
+    dVardI = variable_derivatives_wrt_invariants(dataset, variable_names)
+
+    features = []
+    dQdI1_columns = []
+    dQdI2_columns = []
+    dQdI3_columns = []
+    for gene in genes:
+        energy = normalized_gene_values(gene, variables, reference)
+        if not values_are_valid(energy, limit=value_limit):
+            raise ValueError("Invalid SGEP energy feature: %s" % gene.expression())
+
+        dGdvar = gene_variable_derivatives(gene, variables, variable_names, derivative_step)
+        dQdI1 = np.zeros_like(dataset.I1)
+        dQdI2 = np.zeros_like(dataset.I1)
+        dQdI3 = np.zeros_like(dataset.I1)
+        for name in variable_names:
+            if not values_are_valid(dGdvar[name], limit=value_limit):
+                raise ValueError("Invalid SGEP feature derivative: %s" % gene.expression())
+            dVdI1, dVdI2, dVdI3 = dVardI[name]
+            dQdI1 += dGdvar[name] * dVdI1
+            dQdI2 += dGdvar[name] * dVdI2
+            dQdI3 += dGdvar[name] * dVdI3
+
+        for derivative_values in (dQdI1, dQdI2, dQdI3):
+            if not values_are_valid(derivative_values, limit=value_limit):
+                raise ValueError("Invalid SGEP feature derivative: %s" % gene.expression())
+        features.append(energy)
+        dQdI1_columns.append(dQdI1)
+        dQdI2_columns.append(dQdI2)
+        dQdI3_columns.append(dQdI3)
+
+    if not features:
+        empty = np.zeros((dataset.num_points, 0), dtype=float)
+        return empty, empty, empty, empty
+    return (
+        np.column_stack(features),
+        np.column_stack(dQdI1_columns),
+        np.column_stack(dQdI2_columns),
+        np.column_stack(dQdI3_columns),
+    )
+
+
+def build_gene_feature_set_for_fem_data(
+    data,
+    genes: Sequence[Gene],
+    variable_names: Sequence[str],
+    derivative_step: float = 1e-6,
+    value_limit: float = 1e8,
+) -> FeatureSet:
+    dataset = build_stress_dataset_from_fem_data(data)
+    features, dQdI1, dQdI2, dQdI3 = gene_feature_values_and_derivatives(
+        genes,
+        dataset,
+        variable_names,
+        derivative_step=derivative_step,
+        value_limit=value_limit,
+    )
+    return FeatureSet(
+        features=features,
+        d_features_dI1=dQdI1,
+        d_features_dI2=dQdI2,
+        d_features_dI3=dQdI3,
+    )
 
 
 def stress_feature_for_gene(
