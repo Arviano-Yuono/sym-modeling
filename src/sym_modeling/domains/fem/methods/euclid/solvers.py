@@ -3,6 +3,7 @@
 #=====================================================================
 from sym_modeling.domains.fem.imports import *
 from sym_modeling.domains.fem.methods.euclid.feature_library import *
+from sym_modeling.domains.fem.methods.common.lp_solver import apply_threshold
 from sym_modeling.domains.fem.operators.kinematics import *
 #=====================================================================
 # THRESHOLD:
@@ -28,26 +29,7 @@ def applyThreshold(LHS,RHS,theta,c):
     ---
     
     """
-    print('\n-----------------------------------------------------')
-    print('Apply threshold: ', c.threshold)
-    print()
-    for i in range(len(theta)):
-        #Find parameters less than threshold.
-        theta_less = np.abs(theta) < c.threshold
-        if all(theta[theta_less] == 0.0):
-            print("Converged after iteration:", i)
-            #Convergence of this method is guaranteed.
-            break
-        #Find parameters greater than threshold.
-        theta_greater = np.abs(theta) >= c.threshold
-        theta[theta_less] = 0.0
-        LHS_temp = LHS[theta_greater,:]
-        LHS_temp = LHS_temp[:,theta_greater]
-        theta[theta_greater] = np.linalg.solve(LHS_temp,RHS[theta_greater])
-    print("Solution:")
-    print(theta)
-    print('-----------------------------------------------------\n')
-    return theta
+    return apply_threshold(LHS, RHS, theta, c, verbose=True)
 
 #=====================================================================
 # MISCELLANEOUS:
