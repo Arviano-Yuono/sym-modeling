@@ -1,2 +1,1 @@
-"""Shared FEM discovery utilities used by EUCLID and SGEP."""
-
+"""Shared FEM discovery utilities used by EUCLID and SGEPPY."""
