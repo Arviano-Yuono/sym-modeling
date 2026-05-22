@@ -564,6 +564,20 @@ wheels = [
 ]
 
 [[package]]
+name = "deap"
+version = "1.4.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "moocore" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0c/74/31d2dc3bfcf36257ef4ef2d00a9451696d43d10284bf1495340b2e62aecc/deap-1.4.4.tar.gz", hash = "sha256:50d4bd924fca5a16a3dba8bfdb1140a55e9c24ce50816ab4f5683d2f31c2d734", size = 1053722, upload-time = "2026-04-17T21:03:12.548Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7d/6e/4ba2e2e45fde8483b67e7bee7401a7f132e02c4058d31b6db301f546089a/deap-1.4.4-py3-none-any.whl", hash = "sha256:06c2fcf2e9f870da035c1372c9156ee817c2c31659ee70aae2dcc0849d2c8c49", size = 93078, upload-time = "2026-04-17T21:03:10.952Z" },
+]
+
+[[package]]
 name = "debugpy"
 version = "1.8.20"
 source = { registry = "https://pypi.org/simple" }
@@ -742,6 +756,15 @@ wheels = [
 ]
 
 [[package]]
+name = "geppy"
+version = "0.1.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "deap" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0f/e9/58bba7b39d3e0cd063bab8cc58aca07b9036511aa95ccbc7391f39c4eb5b/geppy-0.1.3.tar.gz", hash = "sha256:3915796ae8beeffba7a570b321624b9a331581e479bb439097a65a0427a28abb", size = 35143, upload-time = "2021-09-21T03:22:25.361Z" }
+
+[[package]]
 name = "gmsh"
 version = "4.15.2"
 source = { registry = "https://pypi.org/simple" }
@@ -750,6 +773,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/3d/b4/0d25938ad62ea4db6bcbdecbc77c72d05d8a6a679abe4addcd86167ffd77/gmsh-4.15.2-py2.py3-none-macosx_12_0_arm64.whl", hash = "sha256:f6649b3e59f49272e7ee8ab282ecb4d1a6e0d627e86cf3e3b1a83fd07417e4f8", size = 36427761, upload-time = "2026-03-24T19:33:51.161Z" },
     { url = "https://files.pythonhosted.org/packages/ab/d4/336becb1488ac4fbab205043987128839c8c62d54e2036b7e887bd009040/gmsh-4.15.2-py2.py3-none-manylinux_2_24_x86_64.whl", hash = "sha256:4076a948ce22625330d1413d4982e22b5c69fc2f0f7951f5df64c778cf54108c", size = 40006930, upload-time = "2026-03-24T19:33:55.549Z" },
     { url = "https://files.pythonhosted.org/packages/78/e9/63c763c0d75544680800651d5ea8c7c3203ae4b5e054706f19a54021a7fb/gmsh-4.15.2-py2.py3-none-win_amd64.whl", hash = "sha256:7b36083bb410fa27c5d0e052929d1a9844a5b09169d66017b72b41aabd49d711", size = 42235999, upload-time = "2026-03-24T19:34:00.529Z" },
+]
+
+[[package]]
+name = "graphviz"
+version = "0.21"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/b3/3ac91e9be6b761a4b30d66ff165e54439dcd48b83f4e20d644867215f6ca/graphviz-0.21.tar.gz", hash = "sha256:20743e7183be82aaaa8ad6c93f8893c923bd6658a04c32ee115edb3c8a835f78", size = 200434, upload-time = "2025-06-15T09:35:05.824Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/91/4c/e0ce1ef95d4000ebc1c11801f9b944fa5910ecc15b5e351865763d8657f8/graphviz-0.21-py3-none-any.whl", hash = "sha256:54f33de9f4f911d7e84e4191749cac8cc5653f815b06738c54db9a15ab8b1e42", size = 47300, upload-time = "2025-06-15T09:35:04.433Z" },
 ]
 
 [[package]]
@@ -1577,6 +1609,36 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ca/84/620cc3f7e3adf6f5067e10f4dbae71295d8f9e16d5d3f9ef97c40f2f592c/mistune-3.2.1.tar.gz", hash = "sha256:7c8e5501d38bac1582e067e46c8343f17d57ea1aaa735823f3aba1fd59c88a28", size = 98003, upload-time = "2026-05-03T14:33:22.312Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2a/7f/a946aa4f8752b37102b41e64dca18a1976ac705c3a0d1dfe74d820a02552/mistune-3.2.1-py3-none-any.whl", hash = "sha256:78cdb0ba5e938053ccf63651b352508d2efa9411dc8810bfb05f2dc5140c0048", size = 53749, upload-time = "2026-05-03T14:33:20.551Z" },
+]
+
+[[package]]
+name = "moocore"
+version = "0.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cffi" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "platformdirs" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9c/95/0e36dbb8f44690a3540ca3c8c08f9000799d95a5eeec2a49abc7c76a8a0f/moocore-0.3.1.tar.gz", hash = "sha256:a8f83cfbc0aa81c1c9dd33e473adbc9b638dc3b1a6943753f8146770bb76bae4", size = 424672, upload-time = "2026-05-04T21:39:12.77Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/76/fd/da7e96fca6a05f5a80b682aa75f301e2ce870836fc444973a2c717beb945/moocore-0.3.1-cp310-abi3-macosx_10_9_universal2.whl", hash = "sha256:cf22852e951e66cb1145858ff1e4fabcb2810dfc2c19d8df99bdc1a52b28c591", size = 631735, upload-time = "2026-05-04T21:39:01.39Z" },
+    { url = "https://files.pythonhosted.org/packages/40/df/c4715242db5a0d0e17578c5e643334c17d7760cd9f66c17b76a3b8267fb5/moocore-0.3.1-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:14af334b83ddf6fbdec8e5ab6e3246e85ad6b34b0f1b2c44a52e3c5561ff5530", size = 882475, upload-time = "2026-05-04T21:39:03.675Z" },
+    { url = "https://files.pythonhosted.org/packages/34/74/6230c8c2865586ce4c4b0eea994bccadd9e3e28f6acd9cade123ba8516fa/moocore-0.3.1-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:bd0a65e501e704e5270d564c3b32438ddac34d22d3c5c54b01b8c897f4d949aa", size = 866948, upload-time = "2026-05-04T21:39:05.2Z" },
+    { url = "https://files.pythonhosted.org/packages/23/10/6cbbc1039ce33a862d6fa7e24d381635ffd183a3e5a2036bad8477cb9c62/moocore-0.3.1-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:3fd980c39e8ad4ba12147ac01f700ec402fb25d452beeccc1a7dc2e0b61e95ca", size = 875147, upload-time = "2026-05-04T21:39:06.846Z" },
+    { url = "https://files.pythonhosted.org/packages/14/17/0ead0e1ea08fdc9a980c2525c61e034d5161675cbb320eae61028e93868d/moocore-0.3.1-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:7b9ddc86e6949d5b5466e805d474b5ae2dbb866ae218dfe7b53cee9eed0151ff", size = 862014, upload-time = "2026-05-04T21:39:08.232Z" },
+    { url = "https://files.pythonhosted.org/packages/09/93/a21b67ddaddb89843869b78e7691d20eab5c5b869a2908cda86fd0d8f663/moocore-0.3.1-cp310-abi3-win_amd64.whl", hash = "sha256:0d5b666bf80bc972816ba8586de77ac6eeaf2b55ab493310487c14e90d491650", size = 517463, upload-time = "2026-05-04T21:39:09.574Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/dc/cd6f4a8977011db9a62c7981462e1820593ee44720a1f3c9a7abe8a94421/moocore-0.3.1-cp310-abi3-win_arm64.whl", hash = "sha256:52178eaaa12babe9532c5494d619cb44c791660adc7ae70dbd2daccf37b7990f", size = 505777, upload-time = "2026-05-04T21:39:11.206Z" },
+]
+
+[[package]]
+name = "mpmath"
+version = "1.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e0/47/dd32fa426cc72114383ac549964eecb20ecfd886d1e5ccf5340b55b02f57/mpmath-1.3.0.tar.gz", hash = "sha256:7a28eb2a9774d00c7bc92411c19a89209d5da7c4c9a9e227be8330a23a25b91f", size = 508106, upload-time = "2023-03-07T16:47:11.061Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl", hash = "sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c", size = 536198, upload-time = "2023-03-07T16:47:09.197Z" },
 ]
 
 [[package]]
@@ -2948,11 +3010,11 @@ wheels = [
 
 [[package]]
 name = "setuptools"
-version = "82.0.1"
+version = "80.10.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/4f/db/cfac1baf10650ab4d1c111714410d2fbb77ac5a616db26775db562c8fab2/setuptools-82.0.1.tar.gz", hash = "sha256:7d872682c5d01cfde07da7bccc7b65469d3dca203318515ada1de5eda35efbf9", size = 1152316, upload-time = "2026-03-09T12:47:17.221Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/76/95/faf61eb8363f26aa7e1d762267a8d602a1b26d4f3a1e758e92cb3cb8b054/setuptools-80.10.2.tar.gz", hash = "sha256:8b0e9d10c784bf7d262c4e5ec5d4ec94127ce206e8738f29a437945fbc219b70", size = 1200343, upload-time = "2026-01-25T22:38:17.252Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/76/f789f7a86709c6b087c5a2f52f911838cad707cc613162401badc665acfe/setuptools-82.0.1-py3-none-any.whl", hash = "sha256:a59e362652f08dcd477c78bb6e7bd9d80a7995bc73ce773050228a348ce2e5bb", size = 1006223, upload-time = "2026-03-09T12:47:15.026Z" },
+    { url = "https://files.pythonhosted.org/packages/94/b8/f1f62a5e3c0ad2ff1d189590bfa4c46b4f3b6e49cef6f26c6ee4e575394d/setuptools-80.10.2-py3-none-any.whl", hash = "sha256:95b30ddfb717250edb492926c92b5221f7ef3fbcc2b07579bcd4a27da21d0173", size = 1064234, upload-time = "2026-01-25T22:38:15.216Z" },
 ]
 
 [[package]]
@@ -2992,6 +3054,8 @@ name = "sym-modeling"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "geppy" },
+    { name = "graphviz" },
     { name = "h5py" },
     { name = "ipykernel" },
     { name = "matplotlib" },
@@ -3003,6 +3067,8 @@ dependencies = [
     { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "setuptools" },
+    { name = "sympy" },
 ]
 
 [package.optional-dependencies]
@@ -3027,7 +3093,9 @@ viz = [
 [package.metadata]
 requires-dist = [
     { name = "foamlib", marker = "extra == 'cfd'", specifier = ">=1.3.21" },
+    { name = "geppy", specifier = ">=0.1.3" },
     { name = "gmsh", marker = "extra == 'fem'", specifier = ">=4.13" },
+    { name = "graphviz", specifier = ">=0.21" },
     { name = "h5py", specifier = ">=3.16.0" },
     { name = "imageio", marker = "extra == 'viz'", specifier = ">=2.34" },
     { name = "ipykernel", specifier = ">=7.2.0" },
@@ -3042,8 +3110,22 @@ requires-dist = [
     { name = "scikit-learn", specifier = ">=1.3" },
     { name = "scipy", specifier = ">=1.10" },
     { name = "seaborn", marker = "extra == 'fem'", specifier = ">=0.11" },
+    { name = "setuptools", specifier = ">=68,<81" },
+    { name = "sympy", specifier = ">=1.14.0" },
 ]
 provides-extras = ["cfd", "fem", "viz", "dev"]
+
+[[package]]
+name = "sympy"
+version = "1.14.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mpmath" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2bb238361cd4ae6125a569b4db67cd9e79846ba2d68c/sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517", size = 7793921, upload-time = "2025-04-27T18:05:01.611Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl", hash = "sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5", size = 6299353, upload-time = "2025-04-27T18:04:59.103Z" },
+]
 
 [[package]]
 name = "terminado"
