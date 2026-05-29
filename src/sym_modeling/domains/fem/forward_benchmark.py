@@ -156,7 +156,7 @@ def _import_fenicsx():
     except Exception as exc:  # pragma: no cover - runtime dependent
         raise ImportError(
             "Forward benchmark requires DOLFINx/FEniCSx + gmsh Python bindings. "
-            "Use the Conda environment from environment.yml."
+            "Use the Docker setup from docker-compose.yml or the Conda environment from environment.yml."
         ) from exc
 
     return MPI, PETSc, ufl, fem, io, fem_petsc, nls_petsc

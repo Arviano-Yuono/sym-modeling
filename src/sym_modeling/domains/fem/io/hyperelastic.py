@@ -153,7 +153,7 @@ def _import_fenicsx():
     except Exception as exc:  # pragma: no cover - depends on runtime environment
         raise ImportError(
             "generate_hyperelastic_data requires a working DOLFINx/FEniCSx environment. "
-            "Use the Conda environment from environment.yml."
+            "Use the Docker setup from docker-compose.yml or the Conda environment from environment.yml."
         ) from exc
 
     return MPI, PETSc, ufl, fem, mesh, fem_petsc, nls_petsc

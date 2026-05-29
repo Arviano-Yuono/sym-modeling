@@ -64,10 +64,14 @@ def _apply_overrides(config: SGEPWorkflowConfig, args: argparse.Namespace) -> SG
     workflow_values = {field.name: getattr(config, field.name) for field in fields(SGEPWorkflowConfig)}
     model_values = {field.name: getattr(config.model, field.name) for field in fields(SGEPConfig)}
 
-    for key in ("data_dir", "loadsteps", "output_dir"):
+    for key in ("data_dir", "loadsteps", "output_dir", "jax_precision", "jax_cache_size"):
         value = getattr(args, key)
         if value is not None:
             workflow_values[key] = value
+    if args.disable_jax_cache:
+        workflow_values["jax_cache_enabled"] = False
+    if args.disable_jax_cache_device_outputs:
+        workflow_values["jax_cache_device_outputs"] = False
     if args.fitting_mode is not None:
         workflow_values["fitting_mode"] = args.fitting_mode
     if args.loadsteps is not None:
@@ -81,6 +85,7 @@ def _apply_overrides(config: SGEPWorkflowConfig, args: argparse.Namespace) -> SG
         "population_size": args.population_size,
         "n_genes": args.n_genes,
         "random_seed": args.seed,
+        "early_stop_value": args.early_stop_value,
         "fitness_metrics": _parse_csv(args.fitness_metrics),
         "epsilons": _parse_epsilons(args.epsilons),
     }
@@ -98,11 +103,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--loadsteps", default=None, help="Comma-separated load steps.")
-    parser.add_argument("--fitting-mode", choices=("direct_stress", "weak_form"), default=None)
+    parser.add_argument("--fitting-mode", choices=("direct_stress", "weak_form", "weak_form_jax"), default=None)
+    parser.add_argument("--jax-precision", choices=("float64", "float32"), default=None)
+    parser.add_argument("--jax-cache-size", type=int, default=None)
+    parser.add_argument("--disable-jax-cache", action="store_true", default=False)
+    parser.add_argument("--disable-jax-cache-device-outputs", action="store_true", default=False)
     parser.add_argument("--generations", type=int, default=None)
     parser.add_argument("--population-size", type=int, default=None)
     parser.add_argument("--n-genes", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--early-stop-value", type=float, default=None)
     parser.add_argument("--fitness-metrics", default=None, help="Comma-separated metrics, e.g. rmse,aic.")
     parser.add_argument("--epsilons", default=None, help="Comma-separated epsilons, e.g. none,10.")
     parser.add_argument("--quiet", action="store_true", default=False)

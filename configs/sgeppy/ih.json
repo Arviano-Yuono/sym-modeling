@@ -1,11 +1,16 @@
 {
   "sgeppy": {
-    "data_dir": "dataset/fem_data/plate_hole_fenics/IH",
+    "data_dir": "dataset/fem_data/euclid_nn/noise=low/Isihara",
     "loadsteps": [10, 20, 30, 40, 50, 60, 70, 80],
-    "max_elements_per_loadstep": 600,
-    "noise_level": 0.0001,
-    "output_dir": "output/sgeppy_results/ih",
+    "max_elements_per_loadstep": null,
+    "noise_level": 0.000,
+    "output_dir": "output/sgeppy_results_jax/ih",
     "progress_log": true,
+    "fitting_mode": "weak_form_jax",
+    "jax_precision": "float64",
+    "jax_cache_enabled": true,
+    "jax_cache_size": 1024,
+    "jax_cache_device_outputs": false,
     "weak_form": {
       "balance": 100.0,
       "penalty_lp": 1e-4,
@@ -18,13 +23,14 @@
       "threshold": 1e-2
     },
     "model": {
-      "variable_names": ["K1", "K2", "Jm1"],
+      "variable_names": ["K1", "K2", "Jm1", "logI13", "logI23"],
       "unary_operators": [],
-      "binary_operators": ["add", "sub", "mul"],
-      "head_length": 7,
+      "binary_operators": ["add", "sub", "mul", "div"],
+      "head_length": 5,
       "n_genes": 5,
       "population_size": 50,
-      "n_generations": 20,
+      "n_generations": 100,
+      "early_stop_value": 1e-6,
       "n_elites": 2,
       "hall_of_fame_size": 3,
       "tournament_size": 3,
@@ -41,9 +47,9 @@
       "fit_intercept": true,
       "regression_method": "stlsq",
       "regression_alpha": 1e-10,
-      "regression_threshold": 1e-3,
+      "regression_threshold": 1e-5,
       "regression_refit": true,
-      "random_seed": 42,
+      "random_seed": 0,
       "verbose": true
     }
   }

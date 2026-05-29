@@ -34,6 +34,11 @@ fem = [
     "matplotlib>=3.5",
     "seaborn>=0.11",
 ]
+jax_fem = [
+    "jax[cuda13]>=0.4.30",
+    "jax-fem>=0.0.11",
+    "pyfiglet>=1.0",
+]
 viz = [
     "imageio>=2.34",
     "matplotlib>=3.7",

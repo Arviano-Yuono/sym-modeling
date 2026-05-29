@@ -61,23 +61,37 @@ SYMBOLIC_FUNCTIONS = {
 def _timed_gep_simple(population, toolbox, n_generations=100, n_elites=1, stats=None, hall_of_fame=None, verbose=True):
     _validate_basic_toolbox(toolbox)
     logbook = tools.Logbook()
-    logbook.header = ["gen", "nevals", "wall_seconds", "cpu_seconds"] + (stats.fields if stats else [])
+    logbook.header = [
+        "gen",
+        "nevals",
+        "wall_seconds",
+        "cpu_seconds",
+        "evaluation_wall_seconds",
+        "evaluation_cpu_seconds",
+        "early_stop",
+    ] + (stats.fields if stats else [])
 
     for gen in range(n_generations + 1):
         wall_start = time.perf_counter()
         cpu_start = time.process_time()
 
         invalid_individuals = [ind for ind in population if not ind.fitness.valid]
+        eval_wall_start = time.perf_counter()
+        eval_cpu_start = time.process_time()
         fitnesses = toolbox.map(toolbox.evaluate, invalid_individuals)
         for ind, fit in zip(invalid_individuals, fitnesses):
             ind.fitness.values = fit
+        evaluation_wall_seconds = time.perf_counter() - eval_wall_start
+        evaluation_cpu_seconds = time.process_time() - eval_cpu_start
 
         if hall_of_fame is not None:
             hall_of_fame.update(population)
         record = stats.compile(population) if stats else {}
+        early_stop_value = getattr(toolbox, "early_stop_value", None)
+        early_stop = _meets_early_stop(population, hall_of_fame, early_stop_value)
 
         next_population = None
-        if gen < n_generations:
+        if gen < n_generations and not early_stop:
             elites = tools.selBest(population, k=n_elites)
             offspring = toolbox.select(population, len(population) - n_elites)
             offspring = [toolbox.clone(ind) for ind in offspring]
@@ -95,6 +109,9 @@ def _timed_gep_simple(population, toolbox, n_generations=100, n_elites=1, stats=
             nevals=len(invalid_individuals),
             wall_seconds=time.perf_counter() - wall_start,
             cpu_seconds=time.process_time() - cpu_start,
+            evaluation_wall_seconds=evaluation_wall_seconds,
+            evaluation_cpu_seconds=evaluation_cpu_seconds,
+            early_stop=early_stop,
             **record,
         )
         if verbose:
@@ -104,6 +121,18 @@ def _timed_gep_simple(population, toolbox, n_generations=100, n_elites=1, stats=
         population = next_population
 
     return population, logbook
+
+
+def _meets_early_stop(population, hall_of_fame, early_stop_value: float | None) -> bool:
+    if early_stop_value is None:
+        return False
+    candidates = list(hall_of_fame) if hall_of_fame is not None else list(population)
+    values = [
+        float(ind.fitness.values[0])
+        for ind in candidates
+        if ind.fitness.valid and len(ind.fitness.values) > 0 and np.isfinite(ind.fitness.values[0])
+    ]
+    return bool(values and min(values) <= float(early_stop_value))
 
 
 @dataclass
@@ -131,6 +160,7 @@ class SGEPConfig:
     cx_gene_pb: float = 0.1
     fitness_metrics: tuple[str, ...] = ("aicc",)
     epsilons: tuple[float | None, ...] | None = None
+    early_stop_value: float | None = None
     fit_intercept: bool = True
     verbose: bool = True
 
@@ -166,6 +196,8 @@ class SGEPConfig:
                 raise ValueError("epsilons must match fitness_metrics length.")
             if all(epsilon is not None for epsilon in self.epsilons):
                 raise ValueError("At least one epsilon must be None.")
+        if self.early_stop_value is not None:
+            self.early_stop_value = float(self.early_stop_value)
         if self.n_elites >= self.population_size:
             raise ValueError("n_elites must be smaller than population_size.")
 
@@ -221,6 +253,7 @@ class SGEP:
         self.toolbox.register("compile", gep.compile_, pset=self.pset)
         self.toolbox.register("evaluate", self.evaluate)
         self.toolbox.register("select", tools.selTournament, tournsize=self.config.tournament_size)
+        self.toolbox.early_stop_value = self.config.early_stop_value
 
         self.toolbox.register("mut_uniform", gep.mutate_uniform, pset=self.pset, ind_pb=self.config.mut_uniform_ind_pb, pb=self.config.mut_uniform_pb)
         self.toolbox.register("mut_invert", gep.invert, pb=self.config.mut_invert_pb)

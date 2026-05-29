@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Sequence
 
+import geppy as gep
 import numpy as np
 
 from .sgep import SGEP, SGEPConfig
@@ -20,6 +21,7 @@ from sym_modeling.domains.fem.methods.common.stress_data import (
     build_stress_dataset_from_fem_data,
     invariant_variables,
     load_stress_dataset_from_euclid_csv,
+    reference_variables,
     resolve_loadsteps,
     synthetic_neo_hookean_dataset,
     variable_derivatives_wrt_F,
@@ -28,6 +30,22 @@ from sym_modeling.domains.fem.methods.common.stress_data import (
 from sym_modeling.domains.fem.methods.common.weak_form import (
     assemble_B_matrix,
     zip_dofs,
+)
+
+WEAK_FORM_JAX_TIMING_KEYS = (
+    "weak_form_jax_gene_derivative_seconds",
+    "weak_form_jax_weak_lhs_seconds",
+    "weak_form_jax_transfer_seconds",
+    "weak_form_jax_lp_seconds",
+    "weak_form_jax_evaluation_seconds",
+    "weak_form_jax_evaluations",
+    "weak_form_jax_cache_hits",
+    "weak_form_jax_cache_misses",
+    "weak_form_jax_compile_cache_hits",
+    "weak_form_jax_compile_cache_misses",
+    "weak_form_jax_cache_entries",
+    "weak_form_jax_gene_compile_seconds",
+    "weak_form_jax_gene_execute_seconds",
 )
 
 
@@ -61,10 +79,19 @@ class SGEPWorkflowConfig:
     duplicate_correlation: float = 0.999999
     output_dir: str = "output/sgeppy_results"
     progress_log: bool = True
+    jax_precision: str = "float64"
+    jax_cache_enabled: bool = True
+    jax_cache_size: int = 256
+    jax_cache_device_outputs: bool = True
 
     def __post_init__(self) -> None:
-        if self.fitting_mode not in {"direct_stress", "weak_form"}:
-            raise ValueError("fitting_mode must be one of: direct_stress, weak_form.")
+        if self.fitting_mode not in {"direct_stress", "weak_form", "weak_form_jax"}:
+            raise ValueError("fitting_mode must be one of: direct_stress, weak_form, weak_form_jax.")
+        if self.jax_precision not in {"float64", "float32"}:
+            raise ValueError("jax_precision must be one of: float64, float32.")
+        self.jax_cache_size = int(self.jax_cache_size)
+        if self.jax_cache_size < 0:
+            raise ValueError("jax_cache_size must be non-negative.")
 
 
 @dataclass
@@ -98,24 +125,52 @@ class SGEPWorkflow:
         self.weak_form_cache: list[_WeakFormDataCache] | None = None
         self.model: SGEP | None = None
         self.result: SGEPResult | None = None
+        self._weak_form_jax_timing = _empty_weak_form_jax_timing()
+        self._weak_form_jax_eval_cache = None
 
     def train(self) -> SGEPResult:
         wall_start = time.perf_counter()
         cpu_start = time.process_time()
-        if self.config.fitting_mode == "weak_form" and self.config.data_dir is None:
-            raise ValueError("fitting_mode='weak_form' requires data_dir.")
+        if self.config.fitting_mode in {"weak_form", "weak_form_jax"} and self.config.data_dir is None:
+            raise ValueError("fitting_mode='%s' requires data_dir." % self.config.fitting_mode)
+        if self.config.fitting_mode == "weak_form_jax":
+            from .jax_backend import JaxWeakFormEvaluationCache, configure_jax_precision
+
+            configure_jax_precision(self.config.jax_precision)
+            self._weak_form_jax_eval_cache = JaxWeakFormEvaluationCache(
+                enabled=self.config.jax_cache_enabled,
+                max_size=self.config.jax_cache_size,
+                device_outputs=self.config.jax_cache_device_outputs,
+                timing=self._weak_form_jax_timing,
+            )
         self.dataset = self._load_dataset()
-        self.fem_datasets = self._load_fem_datasets() if self.config.fitting_mode == "weak_form" else None
+        self.fem_datasets = self._load_fem_datasets() if self.config.fitting_mode in {"weak_form", "weak_form_jax"} else None
         self.weak_form_cache = self._build_weak_form_cache() if self.fem_datasets is not None else None
         variables = invariant_variables(self.dataset, self.config.model.variable_names)
-        builder = stress_feature_builder(
-            self.dataset,
-            self.config.model.variable_names,
-            derivative_step=self.config.derivative_step,
-            value_limit=self.config.invalid_value_limit,
-            duplicate_correlation=self.config.duplicate_correlation,
-        )
-        evaluator = self._weak_form_evaluator(builder) if self.config.fitting_mode == "weak_form" else None
+        if self.config.fitting_mode == "weak_form_jax":
+            from .jax_backend import stress_feature_builder as jax_stress_feature_builder
+
+            builder = jax_stress_feature_builder(
+                self.dataset,
+                self.config.model.variable_names,
+                value_limit=self.config.invalid_value_limit,
+                duplicate_correlation=self.config.duplicate_correlation,
+                precision=self.config.jax_precision,
+                timing=self._weak_form_jax_timing,
+                cache=self._weak_form_jax_eval_cache,
+            )
+        else:
+            builder = stress_feature_builder(
+                self.dataset,
+                self.config.model.variable_names,
+                derivative_step=self.config.derivative_step,
+                value_limit=self.config.invalid_value_limit,
+                duplicate_correlation=self.config.duplicate_correlation,
+            )
+        if self.config.fitting_mode == "weak_form_jax":
+            evaluator = self._weak_form_jax_evaluator(builder)
+        else:
+            evaluator = self._weak_form_evaluator(builder) if self.config.fitting_mode == "weak_form" else None
         self.model = SGEP(self.config.model).fit(
             variables,
             self.dataset.target_vector,
@@ -136,8 +191,10 @@ class SGEPWorkflow:
             "wall_seconds": time.perf_counter() - wall_start,
             "cpu_seconds": time.process_time() - cpu_start,
         }
+        if self.config.fitting_mode == "weak_form_jax":
+            timing.update(self._weak_form_jax_timing)
         self.result = SGEPResult(
-            best_expression=self.model.expression(),
+            best_expression=_reference_normalized_expression(self.model),
             theta=self.model.best_individual.theta,
             metrics=metrics,
             history=history,
@@ -224,6 +281,7 @@ class SGEPWorkflow:
                 lhs += step_lhs
                 rhs += step_rhs
                 weak_lhs_by_step.append(weak_lhs)
+
             theta_valid = apply_penalty_lp_iteration(
                 fem_datasets,
                 lhs,
@@ -242,6 +300,152 @@ class SGEPWorkflow:
                 num_parameters=int(np.count_nonzero(active)),
             )
             prediction = stress_features @ theta if stress_features.shape[1] == theta.size else np.zeros_like(y)
+            return (
+                SparseFitResult(
+                    theta=theta,
+                    prediction=prediction,
+                    active_mask=active,
+                    metrics=metrics,
+                    column_scales=np.ones_like(theta),
+                ),
+                valid,
+            )
+
+        return evaluate
+
+    def _weak_form_jax_evaluator(self, stress_builder):
+        if self.weak_form_cache is None and self.fem_datasets is not None:
+            self.weak_form_cache = self._build_weak_form_cache()
+        weak_caches = self.weak_form_cache or []
+        fem_datasets = [cache.data for cache in weak_caches]
+        variable_names = self.config.model.variable_names
+
+        from .jax_backend import (
+            JaxWeakFormEvaluationCache,
+            block_until_ready,
+            compute_reaction_balance_device,
+            compute_residual_operator_device,
+            compute_weak_lhs_device,
+            feature_values_and_dqdf_device,
+            prepare_jax_case,
+        )
+
+        if self._weak_form_jax_eval_cache is None:
+            self._weak_form_jax_eval_cache = JaxWeakFormEvaluationCache(
+                enabled=self.config.jax_cache_enabled,
+                max_size=self.config.jax_cache_size,
+                device_outputs=self.config.jax_cache_device_outputs,
+                timing=self._weak_form_jax_timing,
+            )
+        eval_cache = self._weak_form_jax_eval_cache
+        jax_cases = [prepare_jax_case(cache, precision=self.config.jax_precision) for cache in weak_caches]
+
+        def evaluate(model: SGEP, individual, X: np.ndarray, y: np.ndarray):
+            evaluation_start = time.perf_counter()
+            stress_features, valid = stress_builder(model, individual, X)
+            gene_valid = np.asarray(valid[: len(individual)], dtype=bool)
+            valid_indices = np.flatnonzero(gene_valid)
+            if valid_indices.size == 0:
+                raise ValueError("No valid JAX weak-form genes.")
+
+            residual_operators = []
+            weak_config = self._weak_form_config()
+            lhs = np.zeros((valid_indices.size, valid_indices.size), dtype=float)
+            rhs = np.zeros(valid_indices.size, dtype=float)
+            balance = float(getattr(weak_config, "balance", 100.0))
+            for case_index, jax_case in enumerate(jax_cases):
+                case_key = ("loadstep", case_index, id(jax_case.data), tuple(getattr(jax_case.F, "shape", ())))
+                artifact_key = eval_cache.weak_artifact_key(
+                    case_key,
+                    model,
+                    individual,
+                    valid_indices,
+                    variable_names,
+                    self.config.jax_precision,
+                    balance,
+                )
+                cached_artifact = eval_cache.get_artifact(artifact_key)
+                if cached_artifact is not None:
+                    step_lhs, step_rhs, residual_operator = cached_artifact
+                    lhs += step_lhs
+                    rhs += step_rhs
+                    residual_operators.append(residual_operator)
+                    continue
+
+                start = time.perf_counter()
+                _, dqdf = feature_values_and_dqdf_device(
+                    model,
+                    individual,
+                    jax_case.F,
+                    variable_names,
+                    gene_indices=valid_indices,
+                    value_limit=self.config.invalid_value_limit,
+                    precision=self.config.jax_precision,
+                    cache=eval_cache,
+                    data_key=("weak", case_index, id(jax_case.data), tuple(getattr(jax_case.F, "shape", ()))),
+                )
+                block_until_ready(dqdf)
+                self._weak_form_jax_timing["weak_form_jax_gene_derivative_seconds"] += time.perf_counter() - start
+
+                start = time.perf_counter()
+                weak_lhs = compute_weak_lhs_device(jax_case, dqdf)
+                step_lhs_device, step_rhs_device = compute_reaction_balance_device(jax_case, weak_lhs, balance)
+                residual_matrix_device, residual_target_device = compute_residual_operator_device(jax_case, weak_lhs, balance)
+                block_until_ready((step_lhs_device, step_rhs_device, residual_matrix_device, residual_target_device))
+                self._weak_form_jax_timing["weak_form_jax_weak_lhs_seconds"] += time.perf_counter() - start
+
+                start = time.perf_counter()
+                step_lhs = np.asarray(step_lhs_device, dtype=float)
+                step_rhs = np.asarray(step_rhs_device, dtype=float)
+                residual_operators.append(
+                    (
+                        np.asarray(residual_matrix_device, dtype=float),
+                        np.asarray(residual_target_device, dtype=float),
+                    )
+                )
+                eval_cache.put_artifact(
+                    artifact_key,
+                    (
+                        step_lhs,
+                        step_rhs,
+                        residual_operators[-1],
+                    ),
+                )
+                self._weak_form_jax_timing["weak_form_jax_transfer_seconds"] += time.perf_counter() - start
+                lhs += step_lhs
+                rhs += step_rhs
+
+            def weak_cost(theta_candidate: np.ndarray) -> tuple[float, float, float]:
+                residual = _residual_vector_from_operators(residual_operators, theta_candidate)
+                weak_value = float(np.sum(np.square(residual)))
+                penalty = float(getattr(weak_config, "penaltyLp", 0.0)) * float(
+                    np.sum(np.power(np.abs(theta_candidate), float(getattr(weak_config, "p", 1.0))))
+                )
+                return weak_value, penalty, weak_value + penalty
+
+            start = time.perf_counter()
+            theta_valid = apply_penalty_lp_iteration(
+                fem_datasets,
+                lhs,
+                rhs,
+                weak_config,
+                cost_fn=weak_cost,
+                verbose=False,
+            )
+            self._weak_form_jax_timing["weak_form_jax_lp_seconds"] += time.perf_counter() - start
+
+            theta = np.zeros(stress_features.shape[1], dtype=float)
+            theta[valid_indices] = theta_valid
+            active = np.abs(theta) >= self.config.weak_form.threshold
+            residual = _residual_vector_from_operators(residual_operators, theta_valid)
+            metrics = regression_metrics(
+                np.zeros_like(residual),
+                residual,
+                num_parameters=int(np.count_nonzero(active)),
+            )
+            prediction = stress_features @ theta if stress_features.shape[1] == theta.size else np.zeros_like(y)
+            self._weak_form_jax_timing["weak_form_jax_evaluation_seconds"] += time.perf_counter() - evaluation_start
+            self._weak_form_jax_timing["weak_form_jax_evaluations"] += 1.0
             return (
                 SparseFitResult(
                     theta=theta,
@@ -306,6 +510,8 @@ class SGEPWorkflow:
         output_dir.mkdir(parents=True, exist_ok=True)
         history_path = output_dir / "history.csv"
         summary_path = output_dir / "summary.json"
+        output_paths = {"history_csv": str(history_path), "summary_json": str(summary_path)}
+        output_paths.update(_export_expression_tree(output_dir, result.model.best_individual))
         _save_history_csv(history_path, result.history)
         _save_json(
             summary_path,
@@ -317,9 +523,10 @@ class SGEPWorkflow:
                 "metrics": result.metrics,
                 "timing": result.timing,
                 "history": result.history,
+                "output_paths": output_paths,
             },
         )
-        return {"history_csv": str(history_path), "summary_json": str(summary_path)}
+        return output_paths
 
 
 def train_sgep(X, y, config: SGEPConfig | None = None) -> SGEP:
@@ -546,6 +753,61 @@ def _cached_weak_residual_vector(
     return np.concatenate(residuals)
 
 
+def _residual_vector_from_operators(
+    residual_operators: Sequence[tuple[np.ndarray, np.ndarray]],
+    theta: np.ndarray,
+) -> np.ndarray:
+    residuals = [matrix.dot(theta) - target for matrix, target in residual_operators]
+    if not residuals:
+        return np.zeros(0, dtype=float)
+    return np.concatenate(residuals)
+
+
+def _empty_weak_form_jax_timing() -> dict[str, float]:
+    return {key: 0.0 for key in WEAK_FORM_JAX_TIMING_KEYS}
+
+
+def _reference_normalized_expression(model: SGEP) -> str:
+    expression = model.expression()
+    offset = _reference_energy_offset(model)
+    if not np.isfinite(offset) or abs(offset) < 1e-12:
+        return expression
+    if expression == "0":
+        return "(%0.12g)" % float(-offset)
+    return "%s + (%0.12g)" % (expression, float(-offset))
+
+
+def _reference_energy_offset(model: SGEP) -> float:
+    individual = model.best_individual
+    theta = getattr(individual, "theta", None)
+    if individual is None or theta is None:
+        return 0.0
+    theta = np.asarray(theta, dtype=float)
+    active = getattr(
+        getattr(individual, "sparse_fit", None),
+        "active_mask",
+        np.abs(theta) >= model.config.regression_threshold,
+    )
+    try:
+        variables = reference_variables(model.config.variable_names)
+        X_ref = _variable_matrix(variables, model.config.variable_names)
+        outputs = model.gene_outputs(individual, X_ref)
+    except (FloatingPointError, KeyError, ValueError, ZeroDivisionError):
+        return 0.0
+    n_gene_terms = min(len(individual), theta.size)
+    offset = 0.0
+    for index in range(n_gene_terms):
+        if active[index]:
+            value = _as_vector(outputs[index], 1)[0]
+            if not np.isfinite(value):
+                return 0.0
+            offset += float(theta[index]) * float(value)
+    intercept_index = len(individual)
+    if model.config.fit_intercept and len(theta) > intercept_index and active[intercept_index]:
+        offset += float(theta[intercept_index])
+    return float(offset)
+
+
 def _variable_matrix(variables: dict[str, np.ndarray], variable_names: Sequence[str]) -> np.ndarray:
     return np.column_stack([variables[name] for name in variable_names])
 
@@ -577,6 +839,34 @@ def _save_history_csv(path: Path, history: Sequence[dict]) -> None:
         writer = csv.DictWriter(handle, fieldnames=list(history[0].keys()))
         writer.writeheader()
         writer.writerows(history)
+
+
+def _export_expression_tree(output_dir: Path, individual) -> dict[str, str]:
+    tree_path = output_dir / "expression_tree.png"
+    label_map = {
+        "linked_add": "+",
+        "add": "+",
+        "sub": "-",
+        "mul": "*",
+        "div": "/",
+        "neg": "neg",
+        "square": "square",
+        "sqrt": "sqrt",
+        "log": "log",
+        "exp": "exp",
+        "sin": "sin",
+        "cos": "cos",
+    }
+    try:
+        gep.export_expression_tree(individual, label_map, str(tree_path))
+    except Exception as exc:  # pragma: no cover - depends on local graphviz executables
+        error_path = output_dir / "expression_tree_error.txt"
+        error_path.write_text(
+            "Failed to export SGEPPY expression tree with geppy.export_expression_tree(): %s\n" % exc,
+            encoding="utf-8",
+        )
+        return {"expression_tree_error": str(error_path)}
+    return {"expression_tree_png": str(tree_path)}
 
 
 def _json_default(value):

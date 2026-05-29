@@ -16,7 +16,7 @@ SUPPORTED_HYPERELASTIC_MODELS = (
 
 @dataclass(frozen=True)
 class DolfinxHyperelasticityConfig:
-    """Minimal DOLFINx hyperelastic setup modeled after `hyperelasticity.ipynb`."""
+    """Minimal DOLFINx hyperelastic setup."""
 
     # Structured box mesh mode
     lower_corner: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -261,7 +261,7 @@ def _import_fenicsx():
     except Exception as exc:  # pragma: no cover - depends on runtime environment
         raise ImportError(
             "DolfinxHyperelasticitySimulation requires a working DOLFINx/FEniCSx environment. "
-            "Use the Conda environment from environment.yml."
+            "Use the Docker setup from docker-compose.yml or the Conda environment from environment.yml."
         ) from exc
 
     return MPI, ufl, fem, io, mesh, fem_petsc, nls_petsc

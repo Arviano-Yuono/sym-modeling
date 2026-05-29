@@ -8,6 +8,7 @@ from sym_modeling.domains.fem.methods.common.weak_form import compute_lp_cost
 
 
 EnergyCheck = Callable[[Sequence, np.ndarray], bool]
+CostFunction = Callable[[np.ndarray], tuple[float, float, float]]
 
 
 def _solve(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
@@ -76,6 +77,7 @@ def apply_penalty_lp_random_start(
     lhs: np.ndarray,
     rhs: np.ndarray,
     config,
+    cost_fn: CostFunction | None = None,
     verbose: bool = True,
 ) -> tuple[np.ndarray, bool]:
     """Solve the Lp problem from EUCLID-style deterministic and random starts."""
@@ -98,7 +100,11 @@ def apply_penalty_lp_random_start(
             theta_start = 10.0 * (2.0 * np.random.rand(*rhs.shape) - 1.0)
         theta_candidate, converged = apply_penalty_lp_threshold(datasets, lhs, rhs, theta_start, config)
         if converged:
-            _, _, total_cost = compute_lp_cost(datasets, theta_candidate, config)
+            _, _, total_cost = (
+                compute_lp_cost(datasets, theta_candidate, config)
+                if cost_fn is None
+                else cost_fn(theta_candidate)
+            )
             if not at_least_one_converged or total_cost < best_cost:
                 best_cost = total_cost
                 theta = np.copy(theta_candidate)
@@ -114,7 +120,13 @@ def apply_penalty_lp_random_start(
     return theta, at_least_one_converged
 
 
-def check_local_minimum_lp(datasets: Sequence, theta: np.ndarray, config, verbose: bool = True) -> None:
+def check_local_minimum_lp(
+    datasets: Sequence,
+    theta: np.ndarray,
+    config,
+    cost_fn: CostFunction | None = None,
+    verbose: bool = True,
+) -> None:
     """Probe the fitted coefficients with small perturbations, matching EUCLID's diagnostic."""
     num_checks = 10
     perturbation_magnitude = 1e-3
@@ -123,13 +135,17 @@ def check_local_minimum_lp(datasets: Sequence, theta: np.ndarray, config, verbos
         print("Check if the solution is a local minimum.")
         print("Number of checks: ", num_checks)
     local_minimum = True
-    _, _, base_cost = compute_lp_cost(datasets, theta, config)
+    _, _, base_cost = compute_lp_cost(datasets, theta, config) if cost_fn is None else cost_fn(theta)
     for _ in range(num_checks):
         theta_perturbed = np.copy(theta)
         for idx in range(len(theta_perturbed)):
             if np.abs(theta[idx]) > float(getattr(config, "threshold", 1e-2)):
                 theta_perturbed[idx] += perturbation_magnitude * (2.0 * np.random.rand() - 1.0)
-        _, _, perturbed_cost = compute_lp_cost(datasets, theta_perturbed, config)
+        _, _, perturbed_cost = (
+            compute_lp_cost(datasets, theta_perturbed, config)
+            if cost_fn is None
+            else cost_fn(theta_perturbed)
+        )
         if base_cost > perturbed_cost:
             local_minimum = False
             if verbose:
@@ -147,14 +163,15 @@ def apply_penalty_lp_iteration(
     rhs: np.ndarray,
     config,
     energy_check: EnergyCheck | None = None,
+    cost_fn: CostFunction | None = None,
     verbose: bool = True,
 ) -> np.ndarray:
     """Run EUCLID's penalty-increment loop with an optional library-specific energy check."""
     for increment in range(int(getattr(config, "numIncrements", 5))):
         if increment > 0:
             config.penaltyLp = float(getattr(config, "penaltyLp", 1e-4)) * float(getattr(config, "factorIncrements", 5.0))
-        theta, converged = apply_penalty_lp_random_start(datasets, lhs, rhs, config, verbose=verbose)
-        check_local_minimum_lp(datasets, theta, config, verbose=verbose)
+        theta, converged = apply_penalty_lp_random_start(datasets, lhs, rhs, config, cost_fn=cost_fn, verbose=verbose)
+        check_local_minimum_lp(datasets, theta, config, cost_fn=cost_fn, verbose=verbose)
         theta = apply_threshold(lhs, rhs, theta, config, verbose=verbose)
         energy_ok = True if energy_check is None else bool(energy_check(datasets, theta))
         if energy_ok and converged:
