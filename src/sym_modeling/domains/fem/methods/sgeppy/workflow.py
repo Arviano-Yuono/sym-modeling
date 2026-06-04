@@ -41,11 +41,9 @@ WEAK_FORM_JAX_TIMING_KEYS = (
     "weak_form_jax_evaluations",
     "weak_form_jax_cache_hits",
     "weak_form_jax_cache_misses",
-    "weak_form_jax_compile_cache_hits",
-    "weak_form_jax_compile_cache_misses",
     "weak_form_jax_cache_entries",
-    "weak_form_jax_gene_compile_seconds",
     "weak_form_jax_gene_execute_seconds",
+    "gene_jit_compile_seconds",
 )
 
 
@@ -79,10 +77,12 @@ class SGEPWorkflowConfig:
     duplicate_correlation: float = 0.999999
     output_dir: str = "output/sgeppy_results"
     progress_log: bool = True
+    generation_log: bool = True
     jax_precision: str = "float64"
     jax_cache_enabled: bool = True
     jax_cache_size: int = 256
     jax_cache_device_outputs: bool = True
+    jax_gene_cache_size: int = 1024
 
     def __post_init__(self) -> None:
         if self.fitting_mode not in {"direct_stress", "weak_form", "weak_form_jax"}:
@@ -92,6 +92,9 @@ class SGEPWorkflowConfig:
         self.jax_cache_size = int(self.jax_cache_size)
         if self.jax_cache_size < 0:
             raise ValueError("jax_cache_size must be non-negative.")
+        self.jax_gene_cache_size = int(self.jax_gene_cache_size)
+        if self.jax_gene_cache_size < 0:
+            raise ValueError("jax_gene_cache_size must be non-negative.")
 
 
 @dataclass
@@ -127,6 +130,8 @@ class SGEPWorkflow:
         self.result: SGEPResult | None = None
         self._weak_form_jax_timing = _empty_weak_form_jax_timing()
         self._weak_form_jax_eval_cache = None
+        self._weak_form_jax_gene_cache = None
+        self._generation_output_paths: dict[str, str] = {}
 
     def train(self) -> SGEPResult:
         wall_start = time.perf_counter()
@@ -134,6 +139,7 @@ class SGEPWorkflow:
         if self.config.fitting_mode in {"weak_form", "weak_form_jax"} and self.config.data_dir is None:
             raise ValueError("fitting_mode='%s' requires data_dir." % self.config.fitting_mode)
         if self.config.fitting_mode == "weak_form_jax":
+            from .gene_evaluator import PerGeneJitCache
             from .jax_backend import JaxWeakFormEvaluationCache, configure_jax_precision
 
             configure_jax_precision(self.config.jax_precision)
@@ -141,6 +147,11 @@ class SGEPWorkflow:
                 enabled=self.config.jax_cache_enabled,
                 max_size=self.config.jax_cache_size,
                 device_outputs=self.config.jax_cache_device_outputs,
+                timing=self._weak_form_jax_timing,
+            )
+            self._weak_form_jax_gene_cache = PerGeneJitCache(
+                enabled=self.config.jax_cache_enabled,
+                max_size=self.config.jax_gene_cache_size,
                 timing=self._weak_form_jax_timing,
             )
         self.dataset = self._load_dataset()
@@ -158,6 +169,7 @@ class SGEPWorkflow:
                 precision=self.config.jax_precision,
                 timing=self._weak_form_jax_timing,
                 cache=self._weak_form_jax_eval_cache,
+                gene_cache=self._weak_form_jax_gene_cache,
             )
         else:
             builder = stress_feature_builder(
@@ -171,11 +183,15 @@ class SGEPWorkflow:
             evaluator = self._weak_form_jax_evaluator(builder)
         else:
             evaluator = self._weak_form_evaluator(builder) if self.config.fitting_mode == "weak_form" else None
-        self.model = SGEP(self.config.model).fit(
+        self.model = SGEP(self.config.model)
+        self._generation_output_paths = {}
+        generation_callback = self._initialize_generation_log(self.model) if self.config.generation_log else None
+        self.model.fit(
             variables,
             self.dataset.target_vector,
             feature_builder=builder,
             evaluator=evaluator,
+            generation_callback=generation_callback,
         )
         fit = self.model.best_fit
         metrics = {
@@ -320,6 +336,7 @@ class SGEPWorkflow:
         fem_datasets = [cache.data for cache in weak_caches]
         variable_names = self.config.model.variable_names
 
+        from .gene_evaluator import PerGeneJitCache
         from .jax_backend import (
             JaxWeakFormEvaluationCache,
             block_until_ready,
@@ -337,7 +354,14 @@ class SGEPWorkflow:
                 device_outputs=self.config.jax_cache_device_outputs,
                 timing=self._weak_form_jax_timing,
             )
+        if self._weak_form_jax_gene_cache is None:
+            self._weak_form_jax_gene_cache = PerGeneJitCache(
+                enabled=self.config.jax_cache_enabled,
+                max_size=self.config.jax_gene_cache_size,
+                timing=self._weak_form_jax_timing,
+            )
         eval_cache = self._weak_form_jax_eval_cache
+        gene_cache = self._weak_form_jax_gene_cache
         jax_cases = [prepare_jax_case(cache, precision=self.config.jax_precision) for cache in weak_caches]
 
         def evaluate(model: SGEP, individual, X: np.ndarray, y: np.ndarray):
@@ -382,6 +406,7 @@ class SGEPWorkflow:
                     value_limit=self.config.invalid_value_limit,
                     precision=self.config.jax_precision,
                     cache=eval_cache,
+                    gene_cache=self._weak_form_jax_gene_cache,
                     data_key=("weak", case_index, id(jax_case.data), tuple(getattr(jax_case.F, "shape", ()))),
                 )
                 block_until_ready(dqdf)
@@ -505,12 +530,51 @@ class SGEPWorkflow:
         if self.config.progress_log:
             print("[SGEPPY] %s" % message, flush=True)
 
+    def _initialize_generation_log(self, model: SGEP):
+        output_dir = Path(self.config.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        generation_log_path = output_dir / "generation_log.csv"
+        best_so_far_path = output_dir / "best_so_far.json"
+        generation_log_path.write_text("", encoding="utf-8")
+        best_so_far_path.unlink(missing_ok=True)
+        self._generation_output_paths = {
+            "generation_log_csv": str(generation_log_path),
+            "best_so_far_json": str(best_so_far_path),
+        }
+
+        def record_generation(row: dict, best_individual) -> None:
+            best_fitness = _finite_values_or_none(best_individual.fitness.values)
+            best_theta = _finite_values_or_none(getattr(best_individual, "theta", ()))
+            best_expression = _reference_normalized_expression(model, best_individual)
+            csv_row = dict(row)
+            csv_row.update(
+                {
+                    "best_fitness": json.dumps(best_fitness),
+                    "best_expression": best_expression,
+                    "best_theta": json.dumps(best_theta),
+                }
+            )
+            _append_csv_row(generation_log_path, csv_row)
+            _save_json_atomic(
+                best_so_far_path,
+                {
+                    "generation": row["gen"],
+                    "statistics": row,
+                    "best_expression": best_expression,
+                    "best_theta": best_theta,
+                    "best_fitness": best_fitness,
+                },
+            )
+
+        return record_generation
+
     def _save_outputs(self, result: SGEPResult) -> dict[str, str]:
         output_dir = Path(self.config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         history_path = output_dir / "history.csv"
         summary_path = output_dir / "summary.json"
         output_paths = {"history_csv": str(history_path), "summary_json": str(summary_path)}
+        output_paths.update(self._generation_output_paths)
         output_paths.update(_export_expression_tree(output_dir, result.model.best_individual))
         _save_history_csv(history_path, result.history)
         _save_json(
@@ -767,9 +831,9 @@ def _empty_weak_form_jax_timing() -> dict[str, float]:
     return {key: 0.0 for key in WEAK_FORM_JAX_TIMING_KEYS}
 
 
-def _reference_normalized_expression(model: SGEP) -> str:
-    expression = model.expression()
-    offset = _reference_energy_offset(model)
+def _reference_normalized_expression(model: SGEP, individual=None) -> str:
+    expression = model.expression(individual)
+    offset = _reference_energy_offset(model, individual)
     if not np.isfinite(offset) or abs(offset) < 1e-12:
         return expression
     if expression == "0":
@@ -777,8 +841,8 @@ def _reference_normalized_expression(model: SGEP) -> str:
     return "%s + (%0.12g)" % (expression, float(-offset))
 
 
-def _reference_energy_offset(model: SGEP) -> float:
-    individual = model.best_individual
+def _reference_energy_offset(model: SGEP, individual=None) -> float:
+    individual = individual or model.best_individual
     theta = getattr(individual, "theta", None)
     if individual is None or theta is None:
         return 0.0
@@ -831,6 +895,24 @@ def _save_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, default=_json_default), encoding="utf-8")
 
 
+def _save_json_atomic(path: Path, payload: dict) -> None:
+    temporary_path = path.with_name(path.name + ".tmp")
+    temporary_path.write_text(
+        json.dumps(_json_safe(payload), indent=2, default=_json_default),
+        encoding="utf-8",
+    )
+    temporary_path.replace(path)
+
+
+def _append_csv_row(path: Path, row: dict) -> None:
+    write_header = path.stat().st_size == 0
+    with path.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(row))
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
 def _save_history_csv(path: Path, history: Sequence[dict]) -> None:
     if not history:
         path.write_text("", encoding="utf-8")
@@ -848,12 +930,13 @@ def _export_expression_tree(output_dir: Path, individual) -> dict[str, str]:
         "add": "+",
         "sub": "-",
         "mul": "*",
-        "div": "/",
+        "protected_div": "protected_div",
         "neg": "neg",
         "square": "square",
-        "sqrt": "sqrt",
-        "log": "log",
-        "exp": "exp",
+        "cube": "cube",
+        "protected_sqrt": "protected_sqrt",
+        "protected_log": "protected_log",
+        "protected_exp": "protected_exp",
         "sin": "sin",
         "cos": "cos",
     }
@@ -875,3 +958,21 @@ def _json_default(value):
     if isinstance(value, np.generic):
         return value.item()
     raise TypeError("Object of type %s is not JSON serializable" % type(value).__name__)
+
+
+def _finite_values_or_none(values) -> list[float | None]:
+    return [float(value) if np.isfinite(value) else None for value in np.asarray(values, dtype=float).reshape(-1)]
+
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return _json_safe(value.tolist())
+    if isinstance(value, np.generic):
+        return _json_safe(value.item())
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    return value

@@ -17,13 +17,19 @@ from . import operator as ops
 from sym_modeling.domains.fem.methods.common.regression import fit_sparse_regression
 
 
-BINARY_OPS = {"add": ops.add, "sub": ops.sub, "mul": ops.mul, "div": ops.div}
+BINARY_OPS = {
+    "add": ops.add,
+    "sub": ops.sub,
+    "mul": ops.mul,
+    "protected_div": ops.protected_div,
+}
 UNARY_OPS = {
     "neg": ops.neg,
     "square": ops.square,
-    "sqrt": ops.sqrt,
-    "log": ops.log,
-    "exp": ops.exp,
+    "cube": ops.cube,
+    "protected_sqrt": ops.protected_sqrt,
+    "protected_log": ops.protected_log,
+    "protected_exp": ops.protected_exp,
     "sin": ops.sin,
     "cos": ops.cos,
 }
@@ -46,19 +52,29 @@ SYMBOLIC_FUNCTIONS = {
     "add": operator.add,
     "sub": operator.sub,
     "mul": operator.mul,
-    "div": operator.truediv,
+    "protected_div": sp.Function("protected_div"),
     "neg": operator.neg,
     "square": lambda x: x**2,
-    "sqrt": sp.sqrt,
-    "log": sp.log,
-    "exp": sp.exp,
+    "cube": lambda x: x**3,
+    "protected_sqrt": sp.Function("protected_sqrt"),
+    "protected_log": sp.Function("protected_log"),
+    "protected_exp": sp.Function("protected_exp"),
     "sin": sp.sin,
     "cos": sp.cos,
     "linked_add": linked_add,
 }
 
 
-def _timed_gep_simple(population, toolbox, n_generations=100, n_elites=1, stats=None, hall_of_fame=None, verbose=True):
+def _timed_gep_simple(
+    population,
+    toolbox,
+    n_generations=100,
+    n_elites=1,
+    stats=None,
+    hall_of_fame=None,
+    verbose=True,
+    generation_callback=None,
+):
     _validate_basic_toolbox(toolbox)
     logbook = tools.Logbook()
     logbook.header = [
@@ -114,6 +130,9 @@ def _timed_gep_simple(population, toolbox, n_generations=100, n_elites=1, stats=
             early_stop=early_stop,
             **record,
         )
+        if generation_callback is not None:
+            best_individual = hall_of_fame[0] if hall_of_fame is not None else tools.selBest(population, k=1)[0]
+            generation_callback(dict(logbook[-1]), best_individual)
         if verbose:
             print(logbook.stream)
         if next_population is None:
@@ -139,7 +158,7 @@ def _meets_early_stop(population, hall_of_fame, early_stop_value: float | None) 
 class SGEPConfig:
     variable_names: tuple[str, ...] = ("K1", "K2", "Jm1")
     unary_operators: tuple[str, ...] = ()
-    binary_operators: tuple[str, ...] = ("add", "sub", "mul", "div")
+    binary_operators: tuple[str, ...] = ("add", "sub", "mul", "protected_div")
     random_seed: int = 0
 
     head_length: int = 7
@@ -265,7 +284,14 @@ class SGEP:
         self.toolbox.register("cx_gene", gep.crossover_gene, pb=self.config.cx_gene_pb)
         return self
 
-    def fit(self, X: np.ndarray | Mapping[str, Sequence[float]], y: Sequence[float], feature_builder=None, evaluator=None) -> "SGEP":
+    def fit(
+        self,
+        X: np.ndarray | Mapping[str, Sequence[float]],
+        y: Sequence[float],
+        feature_builder=None,
+        evaluator=None,
+        generation_callback=None,
+    ) -> "SGEP":
         if self.toolbox is None:
             self.build()
         self._X = self._as_matrix(X)
@@ -291,6 +317,7 @@ class SGEP:
             stats=stats,
             hall_of_fame=self.hall_of_fame,
             verbose=self.config.verbose,
+            generation_callback=generation_callback,
         )
         self.best_individual = self.hall_of_fame[0]
         self.best_fit = self.best_individual.sparse_fit

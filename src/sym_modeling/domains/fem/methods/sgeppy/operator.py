@@ -15,14 +15,10 @@ def mul(a, b):
     """Element-wise multiplication."""
     return operator.mul(a, b)
 
-def div(a, b):
+def protected_div(a, b):
     """Safe division that avoids division by zero."""
-    if np.isscalar(b):
-        if abs(b) < 1e-6:
-            b = 1
-    else:
-        b[abs(b) < 1e-6] = 1
-    return a / b
+    denominator = np.where(np.abs(b) < 1e-6, 1.0, b)
+    return a / denominator
 
 def neg(a):
     return -a
@@ -30,13 +26,16 @@ def neg(a):
 def square(a):
     return np.square(a)
 
-def sqrt(a):
+def cube(a):
+    return np.power(a, 3)
+
+def protected_sqrt(a):
     return np.sqrt(np.abs(a) + EPS)
 
-def log(a):
+def protected_log(a):
     return np.log(np.abs(a) + EPS)
 
-def exp(a):
+def protected_exp(a):
     return np.exp(np.clip(a, -20.0, 20.0))
 
 def sin(a):

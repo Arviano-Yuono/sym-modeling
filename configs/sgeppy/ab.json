@@ -1,0 +1,13 @@
+{
+  "extends": "_base.json",
+  "sgeppy": {
+    "data_dir": "dataset/fem_data/plate_hole_fenics/AB",
+    "loadsteps": [5, 10, 15, 20, 25, 30, 35, 40, 45, 50],
+    "output_dir": "output/sgeppy_results_jax/ab_aicc",
+    "jax_cache_device_outputs": false,
+    "model":{
+      "fitness_metrics": ["aic"],
+      "early_stop_value": -1e7
+    }
+  }
+}

@@ -8,9 +8,7 @@ from dataclasses import dataclass
 from functools import lru_cache, partial
 from typing import Sequence
 
-import geppy as gep
 import numpy as np
-from geppy.tools.parser import _compile_gene
 
 
 JAX_FEM_EXTRA = "jax_fem"
@@ -18,11 +16,9 @@ JAX_PRECISIONS = {"float64", "float32"}
 JAX_CACHE_TIMING_KEYS = (
     "weak_form_jax_cache_hits",
     "weak_form_jax_cache_misses",
-    "weak_form_jax_compile_cache_hits",
-    "weak_form_jax_compile_cache_misses",
     "weak_form_jax_cache_entries",
-    "weak_form_jax_gene_compile_seconds",
     "weak_form_jax_gene_execute_seconds",
+    "gene_jit_compile_seconds",
 )
 
 
@@ -103,27 +99,8 @@ class JaxWeakFormEvaluationCache:
         self.max_size = max(0, int(max_size))
         self.device_outputs = bool(device_outputs)
         self.timing = timing
-        self._compiled = OrderedDict()
         self._artifacts = OrderedDict()
         self._sync_entries()
-
-    def compiled_key(
-        self,
-        model,
-        individual,
-        selected: Sequence[int],
-        variable_names: Sequence[str],
-        precision: str | None,
-    ) -> tuple:
-        return (
-            "compiled",
-            _individual_signature(individual),
-            tuple(int(index) for index in selected),
-            tuple(variable_names),
-            tuple(model.config.unary_operators),
-            tuple(model.config.binary_operators),
-            precision or "array",
-        )
 
     def derivative_key(
         self,
@@ -166,24 +143,6 @@ class JaxWeakFormEvaluationCache:
             float(balance),
         )
 
-    def get_compiled(self, key):
-        if not self.enabled:
-            return None
-        if key in self._compiled:
-            self._compiled.move_to_end(key)
-            self._increment("weak_form_jax_compile_cache_hits")
-            return self._compiled[key]
-        self._increment("weak_form_jax_compile_cache_misses")
-        return None
-
-    def put_compiled(self, key, value) -> None:
-        if not self.enabled or self.max_size <= 0:
-            return
-        self._compiled[key] = value
-        self._compiled.move_to_end(key)
-        self._evict(self._compiled)
-        self._sync_entries()
-
     def get_artifact(self, key):
         if not self.enabled:
             return None
@@ -212,81 +171,11 @@ class JaxWeakFormEvaluationCache:
 
     def _sync_entries(self) -> None:
         if self.timing is not None:
-            self.timing["weak_form_jax_cache_entries"] = float(len(self._compiled) + len(self._artifacts))
+            self.timing["weak_form_jax_cache_entries"] = float(len(self._artifacts))
 
 
 def _individual_signature(individual) -> tuple[str, ...]:
     return tuple(str(gene) for gene in individual)
-
-
-def _jax_ops():
-    _, jnp = require_jax_fem_backend()
-    eps = 1e-12
-
-    def div(a, b):
-        return a / jnp.where(jnp.abs(b) < 1e-6, 1.0, b)
-
-    return {
-        "add": lambda a, b: a + b,
-        "sub": lambda a, b: a - b,
-        "mul": lambda a, b: a * b,
-        "div": div,
-        "neg": lambda a: -a,
-        "square": lambda a: jnp.square(a),
-        "sqrt": lambda a: jnp.sqrt(jnp.abs(a) + eps),
-        "log": lambda a: jnp.log(jnp.abs(a) + eps),
-        "exp": lambda a: jnp.exp(jnp.clip(a, -20.0, 20.0)),
-        "sin": lambda a: jnp.sin(a),
-        "cos": lambda a: jnp.cos(a),
-    }
-
-
-def _jax_pset(model):
-    from .sgep import BINARY_OPS, UNARY_OPS
-
-    ops = _jax_ops()
-    pset = gep.PrimitiveSet("JaxMain", model.config.variable_names)
-    for name in model.config.unary_operators:
-        if name not in UNARY_OPS:
-            raise ValueError("Unsupported unary operator for JAX backend: %s" % name)
-        pset.add_function(ops[name], 1, name=name)
-    for name in model.config.binary_operators:
-        if name not in BINARY_OPS:
-            raise ValueError("Unsupported binary operator for JAX backend: %s" % name)
-        pset.add_function(ops[name], 2, name=name)
-    return pset
-
-
-def _compile_gene_functions(model, individual) -> tuple:
-    pset = _jax_pset(model)
-    return tuple(_compile_gene(gene, pset) for gene in individual)
-
-
-def _variables_from_F(F, variable_names: Sequence[str]):
-    _, jnp = require_jax_fem_backend(enable_x64=None)
-    F11, F12, F21, F22 = F[0], F[1], F[2], F[3]
-    C11 = F11**2 + F21**2
-    C12 = F11 * F12 + F21 * F22
-    C21 = C12
-    C22 = F12**2 + F22**2
-    I1 = C11 + C22 + 1.0
-    I2 = C11 + C22 - C12 * C21 + C11 * C22
-    I3 = C11 * C22 - C12 * C21
-    J = F11 * F22 - F12 * F21
-    K1 = I1 * jnp.power(I3, -1.0 / 3.0) - 3.0
-    K2 = (I1 + I3 - 1.0) * jnp.power(I3, -2.0 / 3.0) - 3.0
-    values = {
-        "I1": I1,
-        "I2": I2,
-        "I3": I3,
-        "J": J,
-        "Jm1": J - 1.0,
-        "K1": K1,
-        "K2": K2,
-        "logI13": jnp.log(K1 / 3.0 + 1.0),
-        "logI23": jnp.log(K2 / 3.0 + 1.0),
-    }
-    return [values[name] for name in variable_names]
 
 
 def prepare_jax_case(cache, precision: str = "float64") -> JaxWeakFormCase:
@@ -318,6 +207,7 @@ def feature_values_and_dqdf_device(
     value_limit: float = 1e8,
     precision: str | None = None,
     cache: JaxWeakFormEvaluationCache | None = None,
+    gene_cache=None,
     data_key=None,
 ) -> tuple:
     _, jnp = require_jax_fem_backend(enable_x64=None if precision is not None else True)
@@ -328,6 +218,7 @@ def feature_values_and_dqdf_device(
     if not selected:
         return jnp.zeros((F.shape[0], 0), dtype=dtype), jnp.zeros((F.shape[0], 0, 4), dtype=dtype)
 
+    # Check the per-individual artifact cache first (keyed by data + individual).
     derivative_key = None
     if cache is not None and cache.device_outputs:
         derivative_key = cache.derivative_key(
@@ -343,16 +234,23 @@ def feature_values_and_dqdf_device(
         if cached is not None:
             return cached
 
-    compile_start = time.perf_counter()
-    evaluate = _compiled_gene_evaluator(model, individual, selected, variable_names, precision, cache)
-    if cache is not None and cache.timing is not None:
-        cache.timing["weak_form_jax_gene_compile_seconds"] += time.perf_counter() - compile_start
+    # Evaluate each gene using its per-gene JIT-compiled evaluator.
+    from .gene_evaluator import evaluate_genes_on_F
 
     execute_start = time.perf_counter()
-    features, dqdf = evaluate(F)
+    features, dqdf = evaluate_genes_on_F(
+        gene_cache,
+        model,
+        individual,
+        selected,
+        F,
+        variable_names,
+        precision=precision or "float64",
+    )
     block_until_ready((features, dqdf))
     if cache is not None and cache.timing is not None:
         cache.timing["weak_form_jax_gene_execute_seconds"] += time.perf_counter() - execute_start
+
     finite = jnp.all(jnp.isfinite(features)) & jnp.all(jnp.isfinite(dqdf))
     bounded = (jnp.max(jnp.abs(features)) <= value_limit) & (jnp.max(jnp.abs(dqdf)) <= value_limit)
     if not bool(np.asarray(finite & bounded)):
@@ -360,39 +258,6 @@ def feature_values_and_dqdf_device(
     if cache is not None and cache.device_outputs and derivative_key is not None:
         cache.put_artifact(derivative_key, (features, dqdf))
     return features, dqdf
-
-
-def _compiled_gene_evaluator(
-    model,
-    individual,
-    selected: Sequence[int],
-    variable_names: Sequence[str],
-    precision: str | None,
-    cache: JaxWeakFormEvaluationCache | None = None,
-):
-    key = cache.compiled_key(model, individual, selected, variable_names, precision) if cache is not None else None
-    if cache is not None:
-        cached = cache.get_compiled(key)
-        if cached is not None:
-            return cached
-
-    jax, jnp = require_jax_fem_backend(enable_x64=None if precision is not None else True)
-    gene_functions = _compile_gene_functions(model, individual)
-    selected_gene_functions = tuple(gene_functions[int(index)] for index in selected)
-
-    def energies(F_row):
-        args = _variables_from_F(F_row, variable_names)
-        return jnp.stack([jnp.reshape(gene_fn(*args), ()) for gene_fn in selected_gene_functions])
-
-    jacobian_fn = jax.jacrev(energies)
-
-    @jax.jit
-    def evaluate(F_batch):
-        return jax.vmap(lambda F_row: (energies(F_row), jacobian_fn(F_row)))(F_batch)
-
-    if cache is not None:
-        cache.put_compiled(key, evaluate)
-    return evaluate
 
 
 def feature_values_and_dqdf(
@@ -404,6 +269,7 @@ def feature_values_and_dqdf(
     value_limit: float = 1e8,
     precision: str | None = None,
     cache: JaxWeakFormEvaluationCache | None = None,
+    gene_cache=None,
     data_key=None,
 ) -> tuple[np.ndarray, np.ndarray]:
     features_device, dqdf_device = feature_values_and_dqdf_device(
@@ -415,6 +281,7 @@ def feature_values_and_dqdf(
         value_limit=value_limit,
         precision=precision,
         cache=cache,
+        gene_cache=gene_cache,
         data_key=data_key,
     )
     features = np.asarray(features_device, dtype=float)
@@ -434,6 +301,7 @@ def stress_feature_builder(
     precision: str = "float64",
     timing: dict[str, float] | None = None,
     cache: JaxWeakFormEvaluationCache | None = None,
+    gene_cache=None,
 ):
     def build(model, individual, X):
         del X
@@ -446,6 +314,7 @@ def stress_feature_builder(
             value_limit=value_limit,
             precision=precision,
             cache=cache,
+            gene_cache=gene_cache,
             data_key=("stress", id(dataset), dataset.num_points),
         )
         block_until_ready(dqdf_device)

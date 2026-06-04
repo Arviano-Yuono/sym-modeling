@@ -32,6 +32,7 @@ from sym_modeling.domains.fem.io.hyperelastic import (  # noqa: E402
 from sym_modeling.domains.fem.methods.common.weak_form import assemble_B_matrix  # noqa: E402
 from sym_modeling.domains.fem.methods.sgeppy import SGEP as GeppySGEP  # noqa: E402
 from sym_modeling.domains.fem.methods.sgeppy import SGEPConfig as GeppySGEPConfig  # noqa: E402
+from sym_modeling.domains.fem.methods.sgeppy import operator as sgeppy_ops  # noqa: E402
 from sym_modeling.domains.fem.methods.sgeppy.run_gep_sparse import (  # noqa: E402
     _apply_overrides,
     build_parser,
@@ -51,6 +52,12 @@ from sym_modeling.domains.fem.methods.sgeppy.jax_backend import (  # noqa: E402
     is_jax_fem_backend_available,
     require_jax_fem_backend,
     stress_feature_builder as jax_stress_feature_builder,
+)
+from sym_modeling.domains.fem.methods.sgeppy.gene_evaluator import (  # noqa: E402
+    PerGeneJitCache,
+    _jax_operators,
+    compile_gene_function,
+    evaluate_genes_on_F,
 )
 
 
@@ -133,6 +140,36 @@ class SGEPPYTests(unittest.TestCase):
             reaction_forces=reaction_forces,
         )
         return theta
+
+    def test_core_numpy_operators_are_protected_and_non_mutating(self):
+        numerator = np.array([4.0, -3.0, 2.0], dtype=float)
+        denominator = np.array([2.0, 0.0, 1e-8], dtype=float)
+        denominator_before = denominator.copy()
+
+        self.assertTrue(np.allclose(sgeppy_ops.add(numerator, denominator), [6.0, -3.0, 2.00000001]))
+        self.assertTrue(np.allclose(sgeppy_ops.sub(numerator, denominator), [2.0, -3.0, 1.99999999]))
+        self.assertTrue(np.allclose(sgeppy_ops.mul(numerator, denominator), [8.0, 0.0, 2e-8]))
+        self.assertTrue(np.allclose(sgeppy_ops.protected_div(numerator, denominator), [2.0, -3.0, 2.0]))
+        self.assertTrue(np.array_equal(denominator, denominator_before))
+        self.assertEqual(sgeppy_ops.protected_div(3.0, 0.0), 3.0)
+        self.assertTrue(np.allclose(sgeppy_ops.square([-2.0, 3.0]), [4.0, 9.0]))
+        self.assertTrue(np.allclose(sgeppy_ops.cube([-2.0, 3.0]), [-8.0, 27.0]))
+        self.assertTrue(np.allclose(sgeppy_ops.protected_sqrt([-4.0, 0.0]), np.sqrt([4.0 + 1e-12, 1e-12])))
+        self.assertTrue(np.allclose(sgeppy_ops.protected_log([-2.0, 0.0]), np.log([2.0 + 1e-12, 1e-12])))
+        self.assertTrue(np.allclose(sgeppy_ops.protected_exp([-30.0, 30.0]), np.exp([-20.0, 20.0])))
+
+    def test_protected_operator_name_is_preserved_in_expression(self):
+        model = self._model(binary_operators=("protected_div",))
+        individual = self._individual(
+            model,
+            (self._binary_gene(model, "protected_div", "x", "y"),),
+        )
+        individual.theta = np.array([2.0], dtype=float)
+        individual.sparse_fit = SimpleNamespace(active_mask=np.array([True], dtype=bool))
+
+        expression = model.expression(individual)
+
+        self.assertIn("protected_div(x, y)", expression)
 
     def test_feature_matrix_uses_one_column_per_gene(self):
         model = self._model()
@@ -308,6 +345,7 @@ class SGEPPYTests(unittest.TestCase):
             self.assertTrue(SGEPWorkflowConfig().jax_cache_enabled)
             self.assertEqual(SGEPWorkflowConfig().jax_cache_size, 256)
             self.assertTrue(SGEPWorkflowConfig().jax_cache_device_outputs)
+            self.assertTrue(SGEPWorkflowConfig().generation_log)
             self.assertEqual(config.jax_precision, "float32")
             self.assertTrue(config.jax_cache_enabled)
             self.assertEqual(config.jax_cache_size, 32)
@@ -339,6 +377,8 @@ class SGEPPYTests(unittest.TestCase):
                     "1e-6",
                     "--loadsteps",
                     "20,30",
+                    "--noise-level",
+                    "1e-4",
                     "--fitness-metrics",
                     "aic,rmse",
                     "--epsilons",
@@ -361,6 +401,7 @@ class SGEPPYTests(unittest.TestCase):
             self.assertFalse(updated.jax_cache_enabled)
             self.assertFalse(updated.jax_cache_device_outputs)
             self.assertEqual(updated.loadsteps, [20, 30])
+            self.assertEqual(updated.noise_level, 1e-4)
             self.assertEqual(updated.model.n_generations, 4)
             self.assertEqual(updated.model.population_size, 7)
             self.assertEqual(updated.model.n_genes, 2)
@@ -369,6 +410,16 @@ class SGEPPYTests(unittest.TestCase):
             self.assertEqual(updated.model.epsilons, (None, 5.0))
             self.assertFalse(updated.progress_log)
             self.assertFalse(updated.model.verbose)
+            self.assertTrue(updated.generation_log)
+
+            disabled_args = build_parser().parse_args(
+                [
+                    "--config",
+                    str(config_path),
+                    "--disable-generation-log",
+                ]
+            )
+            self.assertFalse(_apply_overrides(config, disabled_args).generation_log)
 
     def test_weak_form_jax_requires_optional_dependencies(self):
         with mock.patch(
@@ -402,6 +453,26 @@ class SGEPPYTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "weak_form"):
                 config_from_file(config_path)
+
+    def test_config_rejects_legacy_operator_names(self):
+        cases = (
+            {"binary_operators": ["div"]},
+            {"binary_operators": ["add"], "unary_operators": ["sqrt"]},
+            {"binary_operators": ["add"], "unary_operators": ["log"]},
+            {"binary_operators": ["add"], "unary_operators": ["exp"]},
+        )
+        for model_values in cases:
+            with self.subTest(model_values=model_values):
+                with self.assertRaisesRegex(ValueError, "Unsupported"):
+                    GeppySGEPConfig(**model_values)
+
+    def test_config_keeps_optional_neg_sin_and_cos_operators(self):
+        config = GeppySGEPConfig(
+            binary_operators=("add",),
+            unary_operators=("neg", "sin", "cos"),
+        )
+
+        self.assertEqual(config.unary_operators, ("neg", "sin", "cos"))
 
     def test_weak_form_requires_data_dir(self):
         workflow = SGEPWorkflow(
@@ -483,6 +554,8 @@ class SGEPPYTests(unittest.TestCase):
             self.assertTrue(Path(result.output_paths["expression_tree_png"]).exists())
             self.assertGreater(Path(result.output_paths["expression_tree_png"]).stat().st_size, 0)
             self.assertEqual(summary["output_paths"]["expression_tree_png"], result.output_paths["expression_tree_png"])
+            self.assertIn("generation_log_csv", result.output_paths)
+            self.assertIn("best_so_far_json", result.output_paths)
 
             with Path(result.output_paths["history_csv"]).open(encoding="utf-8", newline="") as handle:
                 rows = list(csv.DictReader(handle))
@@ -492,6 +565,147 @@ class SGEPPYTests(unittest.TestCase):
             self.assertIn("evaluation_wall_seconds", rows[0])
             self.assertIn("evaluation_cpu_seconds", rows[0])
             self.assertIn("early_stop", rows[0])
+
+            with Path(result.output_paths["generation_log_csv"]).open(encoding="utf-8", newline="") as handle:
+                generation_rows = list(csv.DictReader(handle))
+            self.assertEqual(len(generation_rows), 2)
+            self.assertEqual([int(row["gen"]) for row in generation_rows], [0, 1])
+            self.assertIn("best_fitness", generation_rows[0])
+            self.assertIn("best_expression", generation_rows[0])
+            self.assertIn("best_theta", generation_rows[0])
+            self.assertIsInstance(json.loads(generation_rows[0]["best_fitness"]), list)
+            self.assertIsInstance(json.loads(generation_rows[0]["best_theta"]), list)
+
+            best_so_far = json.loads(Path(result.output_paths["best_so_far_json"]).read_text(encoding="utf-8"))
+            self.assertEqual(best_so_far["generation"], 1)
+            self.assertIn("statistics", best_so_far)
+            self.assertIn("best_expression", best_so_far)
+            self.assertIn("best_theta", best_so_far)
+            self.assertIn("best_fitness", best_so_far)
+            self.assertEqual(sgeppy_workflow._finite_values_or_none([np.inf, np.nan, 1.0]), [None, None, 1.0])
+
+    def test_generation_callback_runs_for_each_completed_generation(self):
+        config = GeppySGEPConfig(
+            variable_names=("x",),
+            binary_operators=("add",),
+            unary_operators=(),
+            head_length=1,
+            n_genes=1,
+            population_size=3,
+            n_generations=1,
+            n_elites=1,
+            mut_uniform_pb=0.0,
+            mut_invert_pb=0.0,
+            mut_is_transpose_pb=0.0,
+            mut_ris_transpose_pb=0.0,
+            mut_gene_transpose_pb=0.0,
+            cx_one_point_pb=0.0,
+            cx_two_point_pb=0.0,
+            cx_gene_pb=0.0,
+            verbose=False,
+        )
+        model = GeppySGEP(config)
+        callbacks = []
+
+        def record(row, best_individual):
+            callbacks.append((row, best_individual))
+            self.assertIs(best_individual, model.hall_of_fame[0])
+
+        model.fit(
+            np.array([[1.0], [2.0], [3.0]], dtype=float),
+            np.array([1.0, 2.0, 3.0], dtype=float),
+            generation_callback=record,
+        )
+
+        self.assertEqual([row["gen"] for row, _ in callbacks], [0, 1])
+
+    def test_generation_log_resets_when_output_directory_is_reused(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = SGEPWorkflowConfig(
+                synthetic_samples=8,
+                output_dir=tmp_dir,
+                model=GeppySGEPConfig(
+                    variable_names=("K1",),
+                    binary_operators=("add",),
+                    unary_operators=(),
+                    head_length=1,
+                    n_genes=1,
+                    population_size=3,
+                    n_generations=1,
+                    n_elites=1,
+                    verbose=False,
+                ),
+                progress_log=False,
+            )
+            SGEPWorkflow(config).train()
+            config.model.n_generations = 0
+
+            result = SGEPWorkflow(config).train()
+
+            with Path(result.output_paths["generation_log_csv"]).open(encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["gen"], "0")
+            snapshot = json.loads(Path(result.output_paths["best_so_far_json"]).read_text(encoding="utf-8"))
+            self.assertEqual(snapshot["generation"], 0)
+
+    def test_generation_log_can_be_disabled_without_disabling_final_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = SGEPWorkflowConfig(
+                synthetic_samples=8,
+                output_dir=tmp_dir,
+                generation_log=False,
+                model=GeppySGEPConfig(
+                    variable_names=("K1",),
+                    binary_operators=("add",),
+                    unary_operators=(),
+                    head_length=1,
+                    n_genes=1,
+                    population_size=3,
+                    n_generations=0,
+                    n_elites=1,
+                    verbose=False,
+                ),
+                progress_log=False,
+            )
+
+            result = SGEPWorkflow(config).train()
+
+            self.assertNotIn("generation_log_csv", result.output_paths)
+            self.assertNotIn("best_so_far_json", result.output_paths)
+            self.assertTrue(Path(result.output_paths["history_csv"]).exists())
+            self.assertTrue(Path(result.output_paths["summary_json"]).exists())
+            self.assertFalse((Path(tmp_dir) / "generation_log.csv").exists())
+            self.assertFalse((Path(tmp_dir) / "best_so_far.json").exists())
+
+    def test_quiet_cli_override_keeps_durable_generation_log_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = SGEPWorkflowConfig(
+                synthetic_samples=8,
+                output_dir=tmp_dir,
+                model=GeppySGEPConfig(
+                    variable_names=("K1",),
+                    binary_operators=("add",),
+                    unary_operators=(),
+                    head_length=1,
+                    n_genes=1,
+                    population_size=3,
+                    n_generations=0,
+                    n_elites=1,
+                    verbose=True,
+                ),
+                progress_log=True,
+            )
+            args = build_parser().parse_args(["--config", "unused.json", "--quiet"])
+
+            updated = _apply_overrides(config, args)
+            result = SGEPWorkflow(updated).train()
+
+            self.assertFalse(updated.progress_log)
+            self.assertFalse(updated.model.verbose)
+            self.assertTrue(updated.generation_log)
+            self.assertTrue(Path(result.output_paths["generation_log_csv"]).exists())
+            self.assertTrue(Path(result.output_paths["best_so_far_json"]).exists())
 
     def test_weak_form_cache_reuses_fem_invariant_dataset(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -830,6 +1044,314 @@ class SGEPPYTests(unittest.TestCase):
             self.assertTrue(np.allclose(fit.theta, expected_theta, atol=1e-6))
             self.assertEqual(workflow._weak_form_jax_timing["weak_form_jax_cache_hits"], 0.0)
             self.assertEqual(workflow._weak_form_jax_timing["weak_form_jax_cache_entries"], 0.0)
+
+
+    # -- Config inheritance tests --
+
+    def test_config_extends_inherits_parent_values(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_path = Path(tmp_dir) / "base.json"
+            base_path.write_text(json.dumps({
+                "sgeppy": {
+                    "fitting_mode": "weak_form_jax",
+                    "jax_cache_size": 4096,
+                    "weak_form": {"balance": 50.0, "num_iterations": 200},
+                    "model": {
+                        "variable_names": ["K1"],
+                        "binary_operators": ["add"],
+                        "population_size": 100,
+                        "head_length": 7,
+                    },
+                }
+            }), encoding="utf-8")
+
+            child_path = Path(tmp_dir) / "child.json"
+            child_path.write_text(json.dumps({
+                "extends": "base.json",
+                "sgeppy": {
+                    "data_dir": "some/data",
+                    "output_dir": "some/output",
+                    "jax_cache_size": 512,
+                    "model": {"head_length": 4},
+                }
+            }), encoding="utf-8")
+
+            config = config_from_file(child_path)
+            # Child override wins.
+            self.assertEqual(config.jax_cache_size, 512)
+            self.assertEqual(config.model.head_length, 4)
+            # Parent values inherited.
+            self.assertEqual(config.fitting_mode, "weak_form_jax")
+            self.assertEqual(config.model.population_size, 100)
+            self.assertEqual(config.weak_form.balance, 50.0)
+
+    def test_config_extends_deep_merges_nested_dicts(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_path = Path(tmp_dir) / "base.json"
+            base_path.write_text(json.dumps({
+                "sgeppy": {
+                    "weak_form": {"balance": 50.0, "num_iterations": 200, "p": 0.25},
+                    "model": {
+                        "variable_names": ["K1"],
+                        "binary_operators": ["add"],
+                        "n_genes": 5,
+                        "head_length": 7,
+                    },
+                }
+            }), encoding="utf-8")
+
+            child_path = Path(tmp_dir) / "child.json"
+            child_path.write_text(json.dumps({
+                "extends": "base.json",
+                "sgeppy": {
+                    "weak_form": {"num_iterations": 100},
+                    "model": {"head_length": 3},
+                }
+            }), encoding="utf-8")
+
+            config = config_from_file(child_path)
+            # Child override in nested dict.
+            self.assertEqual(config.weak_form.num_iterations, 100)
+            self.assertEqual(config.model.head_length, 3)
+            # Sibling keys inherited from parent.
+            self.assertEqual(config.weak_form.balance, 50.0)
+            self.assertEqual(config.weak_form.p, 0.25)
+            self.assertEqual(config.model.n_genes, 5)
+
+    def test_config_extends_detects_circular_inheritance(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            a_path = Path(tmp_dir) / "a.json"
+            b_path = Path(tmp_dir) / "b.json"
+            a_path.write_text(json.dumps({"extends": "b.json", "sgeppy": {}}), encoding="utf-8")
+            b_path.write_text(json.dumps({"extends": "a.json", "sgeppy": {}}), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "Circular"):
+                config_from_file(a_path)
+
+    def test_config_extends_missing_parent_raises_clear_error(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            child_path = Path(tmp_dir) / "child.json"
+            child_path.write_text(json.dumps({
+                "extends": "nonexistent.json",
+                "sgeppy": {"model": {"variable_names": ["K1"], "binary_operators": ["add"]}},
+            }), encoding="utf-8")
+
+            with self.assertRaises(FileNotFoundError):
+                config_from_file(child_path)
+
+    def test_config_without_extends_still_works(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "standalone.json"
+            config_path.write_text(json.dumps({
+                "sgeppy": {
+                    "model": {
+                        "variable_names": ["K1"],
+                        "binary_operators": ["add"],
+                    },
+                }
+            }), encoding="utf-8")
+
+            config = config_from_file(config_path)
+            self.assertEqual(config.model.variable_names, ("K1",))
+
+    def test_existing_configs_load_via_inheritance(self):
+        """Verify that the real configs under configs/sgeppy/ all load correctly."""
+        configs_dir = REPO_ROOT / "configs" / "sgeppy"
+        if not configs_dir.is_dir():
+            self.skipTest("configs/sgeppy/ not found.")
+        for config_path in sorted(configs_dir.glob("*.json")):
+            if config_path.name.startswith("_"):
+                continue
+            with self.subTest(config=config_path.name):
+                config = config_from_file(config_path)
+                self.assertIsNotNone(config.model)
+                self.assertEqual(config.fitting_mode, "weak_form_jax")
+                self.assertTrue(len(config.model.variable_names) > 0)
+                self.assertTrue(len(config.model.binary_operators) > 0)
+
+    def test_arruda_boyce_config_enables_full_core_grammar(self):
+        config = config_from_file(REPO_ROOT / "configs" / "sgeppy" / "ab.json")
+
+        self.assertEqual(config.data_dir, "dataset/fem_data/plate_hole_fenics/AB")
+        self.assertEqual(config.loadsteps, [5, 10, 15, 20, 25, 30, 35, 40, 45, 50])
+        self.assertEqual(config.output_dir, "output/sgeppy_results_jax/ab_aicc")
+        self.assertFalse(config.jax_cache_device_outputs)
+        self.assertEqual(config.model.binary_operators, ("add", "sub", "mul", "protected_div"))
+        self.assertEqual(
+            config.model.unary_operators,
+            ("square", "cube", "protected_sqrt", "protected_log", "protected_exp"),
+        )
+
+    # -- PerGeneJitCache tests (no JAX required) --
+
+    def test_per_gene_jit_cache_compiles_once(self):
+        cache = PerGeneJitCache(enabled=True, max_size=16)
+        sentinel = object()
+        cache.put("K1 + K2", ("K1", "K2"), "float64", sentinel)
+        self.assertIs(cache.get("K1 + K2", ("K1", "K2"), "float64"), sentinel)
+        self.assertEqual(cache.size, 1)
+
+    def test_per_gene_jit_cache_bounded_eviction(self):
+        cache = PerGeneJitCache(enabled=True, max_size=2)
+        cache.put("a", ("K1",), "float64", 1)
+        cache.put("b", ("K1",), "float64", 2)
+        self.assertEqual(cache.size, 2)
+        # Accessing "a" makes it most-recently used.
+        cache.get("a", ("K1",), "float64")
+        # Adding "c" should evict "b" (the least-recently used).
+        cache.put("c", ("K1",), "float64", 3)
+        self.assertEqual(cache.size, 2)
+        self.assertIsNone(cache.get("b", ("K1",), "float64"))
+        self.assertEqual(cache.get("a", ("K1",), "float64"), 1)
+        self.assertEqual(cache.get("c", ("K1",), "float64"), 3)
+
+    def test_per_gene_jit_cache_disabled(self):
+        cache = PerGeneJitCache(enabled=False, max_size=16)
+        cache.put("a", ("K1",), "float64", 1)
+        self.assertIsNone(cache.get("a", ("K1",), "float64"))
+        self.assertEqual(cache.size, 0)
+
+    def test_per_gene_jit_cache_clear(self):
+        cache = PerGeneJitCache(enabled=True, max_size=16)
+        cache.put("a", ("K1",), "float64", 1)
+        cache.put("b", ("K1",), "float64", 2)
+        self.assertEqual(cache.size, 2)
+        cache.clear()
+        self.assertEqual(cache.size, 0)
+        self.assertIsNone(cache.get("a", ("K1",), "float64"))
+
+    def test_config_accepts_jax_gene_cache_size(self):
+        config = SGEPWorkflowConfig(jax_gene_cache_size=512)
+        self.assertEqual(config.jax_gene_cache_size, 512)
+        self.assertEqual(SGEPWorkflowConfig().jax_gene_cache_size, 1024)
+
+    def test_config_rejects_negative_jax_gene_cache_size(self):
+        with self.assertRaisesRegex(ValueError, "jax_gene_cache_size"):
+            SGEPWorkflowConfig(jax_gene_cache_size=-1)
+
+    # -- Per-gene JIT evaluation tests (require JAX) --
+
+    @unittest.skipUnless(is_jax_fem_backend_available(), "JAX/JAX-FEM optional dependencies are not installed.")
+    def test_jax_core_operators_have_finite_outputs_and_gradients(self):
+        import jax
+        import jax.numpy as jnp
+
+        operators = _jax_operators()
+        binary_inputs = (jnp.asarray(2.0), jnp.asarray(0.0))
+        for name in ("add", "sub", "mul", "protected_div"):
+            with self.subTest(operator=name):
+                function = operators[name]
+                value = function(*binary_inputs)
+                gradient = jax.grad(lambda a: function(a, binary_inputs[1]))(binary_inputs[0])
+                self.assertTrue(np.isfinite(np.asarray(value)))
+                self.assertTrue(np.isfinite(np.asarray(gradient)))
+
+        for name in ("square", "cube", "protected_sqrt", "protected_log", "protected_exp"):
+            with self.subTest(operator=name):
+                function = operators[name]
+                value = function(jnp.asarray(-2.0))
+                gradient = jax.grad(function)(jnp.asarray(-2.0))
+                self.assertTrue(np.isfinite(np.asarray(value)))
+                self.assertTrue(np.isfinite(np.asarray(gradient)))
+
+    @unittest.skipUnless(is_jax_fem_backend_available(), "JAX/JAX-FEM optional dependencies are not installed.")
+    def test_evaluate_genes_matches_direct_gene_compilation(self):
+        """Per-gene evaluation should produce the same results as compiling
+        all genes into a single function (the old approach)."""
+        import jax
+        import jax.numpy as jnp
+
+        model = GeppySGEP(GeppySGEPConfig(
+            variable_names=("K1", "Jm1"),
+            binary_operators=("add", "mul"),
+            unary_operators=("square",),
+            population_size=4,
+            n_genes=2,
+            head_length=5,
+            random_seed=42,
+            verbose=False,
+        ))
+        model.build()
+        individual = model.toolbox.individual()
+
+        F_batch = jnp.asarray([
+            [1.1, 0.05, 0.0, 0.95],
+            [1.2, 0.0, 0.0, 0.9],
+            [1.05, 0.1, -0.05, 1.1],
+        ], dtype=jnp.float64)
+
+        variable_names = ("K1", "Jm1")
+
+        # Evaluate via the new per-gene path.
+        gene_cache = PerGeneJitCache(enabled=True)
+        features, dqdf = evaluate_genes_on_F(
+            gene_cache,
+            model,
+            individual,
+            list(range(len(individual))),
+            F_batch,
+            variable_names,
+            precision="float64",
+        )
+
+        # Verify shapes.
+        n_points = F_batch.shape[0]
+        n_genes = len(individual)
+        self.assertEqual(features.shape, (n_points, n_genes))
+        self.assertEqual(dqdf.shape, (n_points, n_genes, 4))
+
+        # Verify that a second call with the same individual hits the cache.
+        features2, dqdf2 = evaluate_genes_on_F(
+            gene_cache,
+            model,
+            individual,
+            list(range(len(individual))),
+            F_batch,
+            variable_names,
+            precision="float64",
+        )
+        np.testing.assert_allclose(np.asarray(features), np.asarray(features2), atol=1e-12)
+        np.testing.assert_allclose(np.asarray(dqdf), np.asarray(dqdf2), atol=1e-12)
+
+        # Verify cache has entries.
+        self.assertGreater(gene_cache.size, 0)
+
+    @unittest.skipUnless(is_jax_fem_backend_available(), "JAX/JAX-FEM optional dependencies are not installed.")
+    def test_per_gene_eval_agrees_with_feature_values_and_dqdf(self):
+        """The refactored feature_values_and_dqdf should produce valid results
+        using per-gene JIT caching."""
+        import jax.numpy as jnp
+
+        model = GeppySGEP(GeppySGEPConfig(
+            variable_names=("K1", "Jm1"),
+            binary_operators=("add", "mul"),
+            population_size=4,
+            n_genes=2,
+            head_length=5,
+            random_seed=7,
+            verbose=False,
+        ))
+        model.build()
+        individual = model.toolbox.individual()
+
+        F_batch = jnp.asarray([
+            [1.1, 0.05, 0.0, 0.95],
+            [1.2, 0.0, 0.0, 0.9],
+        ], dtype=jnp.float64)
+
+        gene_cache = PerGeneJitCache(enabled=True)
+        features, dqdf = feature_values_and_dqdf(
+            model,
+            individual,
+            np.asarray(F_batch),
+            ("K1", "Jm1"),
+            precision="float64",
+            gene_cache=gene_cache,
+        )
+        self.assertEqual(features.shape[0], 2)
+        self.assertEqual(features.shape[1], 2)
+        self.assertTrue(np.all(np.isfinite(features)))
+        self.assertTrue(np.all(np.isfinite(dqdf)))
 
 
 if __name__ == "__main__":
