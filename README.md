@@ -34,7 +34,7 @@ src/sym_modeling/
 
 - Large CFD/FEM datasets were not copied into this repo. Update method configs to point at your data location, or place data under this repo if you want a fully standalone setup.
 - `foamlib` is an optional dependency because it is CFD-specific.
-- `jax_fem` is an optional dependency for SGEP weak-form runs that use JAX-native arrays and autodiff.
+- `jax_fem` is an optional dependency for SGEPPY weak-form runs that use JAX-native arrays and autodiff.
 - Use Docker for FEniCSx work on Linux when possible. The PyPI `fenics` package is not used.
 
 ## Quick Start
@@ -172,6 +172,20 @@ Artifacts are written under the run directory configured by `run.output_root`.
 
 ## Operating SGEPPY
 
+SGEPPY is the geppy-backed FEM symbolic discovery runner. It generates candidate
+strain-energy features, fits sparse coefficients, and writes run artifacts under
+the configured `output_dir`.
+
+Use the checked-in configs first:
+
+```bash
+uv sync --extra dev --extra jax_fem
+uv run --extra jax_fem sym-fem-sgeppy --config configs/sgeppy/nh2.json
+```
+
+Available examples live under `configs/sgeppy/` and inherit shared defaults from
+`configs/sgeppy/_base.json`.
+
 SGEPPY supports three fitting modes:
 
 - `direct_stress`: fit generated stress features directly to Piola data.
@@ -180,51 +194,24 @@ SGEPPY supports three fitting modes:
   arrays, compute `dQ/dF` with JAX autodiff, and assemble weak-form matrices with
   batched JAX operations. Dataset generation still stays outside JAX/JAX-FEM.
 
-Install the JAX/JAX-FEM optional dependencies before using `weak_form_jax`:
+Small experiments are usually easiest as CLI overrides:
 
 ```bash
-uv sync --extra dev --extra jax_fem
+uv run --extra jax_fem sym-fem-sgeppy \
+  --config configs/sgeppy/nh2.json \
+  --loadsteps 10,20 \
+  --noise-level 1e-4 \
+  --generations 25 \
+  --population-size 40 \
+  --n-genes 3 \
+  --output-dir output/sgeppy/nh2_noise_1e-4
 ```
 
-Minimal config shape:
+Use `--noise-level` to add displacement noise while loading FEM data. This is
+separate from `--epsilons`, which configures epsilon-constrained model fitness
+ranking against `--fitness-metrics` values.
 
-```json
-{
-  "sgeppy": {
-    "data_dir": "dataset/fem_data/plate_hole_fenics/GT",
-    "fitting_mode": "weak_form_jax",
-    "loadsteps": [10, 20],
-    "model": {
-      "variable_names": ["K1", "Jm1"],
-      "binary_operators": ["add", "mul"],
-      "unary_operators": [],
-      "n_genes": 2,
-      "population_size": 20,
-      "n_generations": 10
-    },
-    "weak_form": {
-      "penalty_lp": 0.0,
-      "num_increments": 1
-    }
-  }
-}
-```
-
-Run from the CLI:
-
-```bash
-uv run --extra jax_fem sym-fem-sgeppy --config path/to/sgeppy.json
-```
-
-You can also override the mode explicitly:
-
-```bash
-uv run --extra jax_fem sym-fem-sgeppy --config path/to/sgeppy.json --fitting-mode weak_form_jax
-```
-
-The `weak_form_jax` path currently converts final assembled systems back to
-NumPy for the existing Lp solver and metrics, so Euclid and the original
-`weak_form` implementation remain compatible.
+More detail is in `docs/fem-discovery-methods.md`.
 
 ## Operating Euclid
 

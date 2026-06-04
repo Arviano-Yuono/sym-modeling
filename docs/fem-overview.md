@@ -13,7 +13,7 @@ src/sym_modeling/domains/fem/
   dolfinx.py              # DOLFINx simulation helper API
   forward_benchmark.py    # forward FEM benchmark utilities
   methods/euclid/         # fixed feature-library discovery
-  methods/sgep/           # GEP-generated feature-library discovery
+  methods/sgeppy/         # geppy-backed generated feature-library discovery
 ```
 
 ## Core Data Flow
@@ -27,10 +27,11 @@ CSV nodal displacement + mesh data
   -> compute C = F^T F
   -> compute I1, I2, I3 and J
   -> compute invariant derivatives dI/dF
-  -> pass these quantities into EUCLID or SGEP
+  -> pass these quantities into EUCLID or SGEPPY
 ```
 
-This is intentionally shared. EUCLID and SGEP should see the same `F`, invariants, and reference stresses so comparison is fair.
+This is intentionally shared. EUCLID and SGEPPY should see the same `F`,
+invariants, reactions, and reference stresses so comparison is fair.
 
 ## Important Objects
 

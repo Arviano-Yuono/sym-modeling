@@ -42,7 +42,8 @@ Important columns:
 - `node1`, `node2`, `node3`: triangular element connectivity
 - optional `Pxx`, `Pxy`, `Pyx`, `Pyy`: reference first Piola-Kirchhoff stress
 
-The reference `P` columns are needed for direct stress fitting/evaluation, including SGEP.
+The reference `P` columns are needed for direct-stress fitting/evaluation,
+including SGEPPY `direct_stress` runs.
 
 ## `output_integrator.csv`
 
@@ -59,7 +60,9 @@ Important columns:
 
 - `forces`: global reaction force measurements for the labeled constrained DOF groups
 
-EUCLID uses reaction forces in its weak-form fitting path. SGEP v1 uses direct reference stress fitting, but can still load the same dataset format.
+EUCLID and SGEPPY weak-form runs use reaction forces in their weak-form fitting
+paths. SGEPPY `direct_stress` runs can load the same dataset format, but fit to
+the reference `P` columns instead.
 
 ## Loader Entry Point
 
@@ -73,3 +76,18 @@ print(data.F.shape)
 print(data.I1.shape, data.I2.shape, data.I3.shape)
 print(data.P.shape)
 ```
+
+## Generating Arruda-Boyce Data
+
+The Arruda-Boyce plate-hole generator uses the checked-in tagged mesh and writes
+the same EUCLID-compatible CSV layout:
+
+```bash
+docker compose run --rm fenicsx \
+  python scripts/generate_arruda_boyce_dataset.py
+```
+
+By default, the generated dataset is written to
+`dataset/fem_data/plate_hole_fenics/AB`. Run the script with `--help` to adjust
+the load steps, output directory, energy scale, limiting chain stretch, or bulk
+modulus.
