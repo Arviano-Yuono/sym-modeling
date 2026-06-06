@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 
-SUPPORTED_FORWARD_BENCHMARK_MODELS = ("NH2", "NH4", "IH", "HW", "GT")
+SUPPORTED_FORWARD_BENCHMARK_MODELS = ("NH2", "NH4", "IH", "HW", "GT", "AB")
 
 BENCHMARK_BOUNDARY_TAGS = {
     "LEFT": 1,
@@ -50,6 +50,11 @@ class ForwardFEMBenchmarkConfig:
     solver_linesearch_type: str = "bt"
     initial_load_subdivisions: int = 1
     max_load_subdivisions: int = 32
+
+    # Five-term polynomial Arruda-Boyce approximation.
+    arruda_boyce_mu: float = 1.0
+    arruda_boyce_lambda_m: float = 3.0
+    arruda_boyce_bulk_modulus: float = 3.0
 
     save_debug_fields: bool = True
     use_comm_self: bool = True
@@ -94,6 +99,12 @@ class ForwardFEMBenchmarkConfig:
             raise ValueError(
                 "max_load_subdivisions must be >= initial_load_subdivisions."
             )
+        if self.arruda_boyce_mu <= 0.0:
+            raise ValueError("arruda_boyce_mu must be positive.")
+        if self.arruda_boyce_lambda_m <= 1.0:
+            raise ValueError("arruda_boyce_lambda_m must be greater than 1.")
+        if self.arruda_boyce_bulk_modulus <= 0.0:
+            raise ValueError("arruda_boyce_bulk_modulus must be positive.")
         tag_values = [self.left_tag, self.bottom_tag, self.right_tag, self.top_tag, self.hole_tag]
         if any(tag <= 0 for tag in tag_values):
             raise ValueError("All boundary tags must be positive integers.")
@@ -117,6 +128,8 @@ class ForwardFEMBenchmarkConfig:
         if self.load_steps is not None:
             return tuple(float(step) for step in self.load_steps)
 
+        if self.material_model == "AB":
+            return tuple(0.05 * float(step) for step in range(1, 11))
         num_steps = 4 if self.material_model in {"NH2", "NH4"} else 8
         return tuple(0.1 * float(step) for step in range(1, num_steps + 1))
 
@@ -347,10 +360,33 @@ def _plane_strain_invariants(ufl, displacement):
     }
 
 
-def _benchmark_energy_density(ufl, invariants: dict[str, Any], material_model: str):
+def _arruda_boyce_energy_density(
+    I1_bar,
+    J,
+    mu: float,
+    lambda_m: float,
+    bulk_modulus: float,
+):
+    lambda_m_squared = lambda_m**2
+    distortional_energy = (
+        0.5 * (I1_bar - 3.0)
+        + (I1_bar**2 - 9.0) / (20.0 * lambda_m_squared)
+        + 11.0 * (I1_bar**3 - 27.0) / (1050.0 * lambda_m_squared**2)
+        + 19.0 * (I1_bar**4 - 81.0) / (7000.0 * lambda_m_squared**3)
+        + 519.0 * (I1_bar**5 - 243.0) / (673750.0 * lambda_m_squared**4)
+    )
+    return mu * distortional_energy + 0.5 * bulk_modulus * ((J - 1.0) ** 2)
+
+
+def _benchmark_energy_density(
+    ufl,
+    invariants: dict[str, Any],
+    config: ForwardFEMBenchmarkConfig,
+):
     I1_bar = invariants["I1_bar"]
     I2_bar = invariants["I2_bar"]
     J = invariants["J"]
+    material_model = config.material_model
 
     if material_model == "NH2":
         return 0.5 * (I1_bar - 3.0) + 1.5 * ((J - 1.0) ** 2)
@@ -373,6 +409,14 @@ def _benchmark_energy_density(ufl, invariants: dict[str, Any], material_model: s
         )
     if material_model == "GT":
         return 0.5 * (I1_bar - 3.0) + 1.5 * ((J - 1.0) ** 2) + 1.0 * ufl.ln(I2_bar / 3.0)
+    if material_model == "AB":
+        return _arruda_boyce_energy_density(
+            I1_bar=I1_bar,
+            J=J,
+            mu=config.arruda_boyce_mu,
+            lambda_m=config.arruda_boyce_lambda_m,
+            bulk_modulus=config.arruda_boyce_bulk_modulus,
+        )
 
     raise ValueError("Unsupported material_model: %s" % material_model)
 
@@ -1026,7 +1070,7 @@ def run_forward_hyperelastic_benchmark(
     strain_energy_density = _benchmark_energy_density(
         ufl=ufl,
         invariants=invariants,
-        material_model=config.material_model,
+        config=config,
     )
     piola_expr = ufl.diff(strain_energy_density, invariants["F2"])
     metadata = {"quadrature_degree": config.quadrature_degree}

@@ -23,6 +23,7 @@ dependencies = [
 ]
 
 [project.scripts]
+sym-fem-euclid = "sym_modeling.domains.fem.methods.euclid.run_euclid:main"
 sym-fem-sgeppy = "sym_modeling.domains.fem.methods.sgeppy.run_gep_sparse:main"
 
 [project.optional-dependencies]
