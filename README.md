@@ -35,6 +35,7 @@ src/sym_modeling/
 - Large CFD/FEM datasets were not copied into this repo. Update method configs to point at your data location, or place data under this repo if you want a fully standalone setup.
 - `foamlib` is an optional dependency because it is CFD-specific.
 - `jax_fem` is an optional dependency for SGEPPY weak-form runs that use JAX-native arrays and autodiff.
+- `torch_fem` is an optional dependency for the CUDA-only SGEPPY PyTorch backend.
 - Use Docker for FEniCSx work on Linux when possible. The PyPI `fenics` package is not used.
 
 ## Quick Start
@@ -186,19 +187,18 @@ uv run --extra jax_fem sym-fem-sgeppy --config configs/sgeppy/nh2.json
 Available examples live under `configs/sgeppy/` and inherit shared defaults from
 `configs/sgeppy/_base.json`.
 
-SGEPPY supports three fitting modes:
-
-- `direct_stress`: fit generated stress features directly to Piola data.
-- `weak_form`: use the existing NumPy weak-form path shared with Euclid.
-- `weak_form_jax`: read the same CSV FEM data, store calculation arrays as JAX
-  arrays, compute `dQ/dF` with JAX autodiff, and assemble weak-form matrices with
-  batched JAX operations. Dataset generation still stays outside JAX/JAX-FEM.
+SGEPPY uses `backend="jax"` by default: it reads FEM CSV data, stores
+calculation arrays as backend arrays, computes `dQ/dF` with autodiff, and
+assembles weak-form matrices with batched backend operations. The alternative
+`backend="torch"` path is CUDA-only and requires `uv sync --extra torch_fem`
+plus a CUDA-capable PyTorch build and NVIDIA driver.
 
 Small experiments are usually easiest as CLI overrides:
 
 ```bash
 uv run --extra jax_fem sym-fem-sgeppy \
   --config configs/sgeppy/nh2.json \
+  --backend jax \
   --loadsteps 10,20 \
   --noise-level 1e-4 \
   --generations 25 \
@@ -212,6 +212,17 @@ separate from `--epsilons`, which configures epsilon-constrained model fitness
 ranking against `--fitness-metrics` values.
 
 More detail is in `docs/fem-discovery-methods.md`.
+
+To compare the JAX and Torch-CUDA backends on a small smoke run:
+
+```bash
+uv run --extra jax_fem --extra torch_fem python scripts/benchmark_sgeppy_backends.py \
+  --config configs/sgeppy/nh2.json \
+  --loadsteps 10 \
+  --generations 0 \
+  --population-size 3 \
+  --output-json tmp/sgeppy_backend_ab/nh2.json
+```
 
 ## Operating Euclid
 

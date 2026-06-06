@@ -42,8 +42,7 @@ Important columns:
 - `node1`, `node2`, `node3`: triangular element connectivity
 - optional `Pxx`, `Pxy`, `Pyx`, `Pyy`: reference first Piola-Kirchhoff stress
 
-The reference `P` columns are needed for direct-stress fitting/evaluation,
-including SGEPPY `direct_stress` runs.
+The reference `P` columns are used for stress diagnostics and summaries.
 
 ## `output_integrator.csv`
 
@@ -61,8 +60,7 @@ Important columns:
 - `forces`: global reaction force measurements for the labeled constrained DOF groups
 
 EUCLID and SGEPPY weak-form runs use reaction forces in their weak-form fitting
-paths. SGEPPY `direct_stress` runs can load the same dataset format, but fit to
-the reference `P` columns instead.
+paths. SGEPPY currently uses the JAX weak-form path.
 
 ## Loader Entry Point
 

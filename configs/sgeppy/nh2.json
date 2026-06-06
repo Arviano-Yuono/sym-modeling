@@ -3,12 +3,8 @@
   "sgeppy": {
     "data_dir": "dataset/fem_data/plate_hole_fenics/NH2",
     "loadsteps": [10, 20, 30],
-    "output_dir": "output/sgeppy_results_jax/nh2_aicc",
-    "jax_cache_size": 1024,
-    "jax_cache_device_outputs": false,
-    "model":{
-      "fitness_metrics": ["aicc"],
-      "n_generations": 100
-    }
+    "output_dir": "output/sgeppy_results_jax/nh2",
+    "cache_size": 1024,
+    "cache_device_outputs": false
   }
 }

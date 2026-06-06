@@ -4,11 +4,11 @@
     "noise_level": 0.0,
     "progress_log": true,
     "generation_log": true,
-    "fitting_mode": "weak_form_jax",
-    "jax_precision": "float64",
-    "jax_cache_enabled": true,
-    "jax_cache_size": 1024,
-    "jax_cache_device_outputs": true,
+    "backend": "jax",
+    "precision": "float64",
+    "cache_enabled": true,
+    "cache_size": 1024,
+    "cache_device_outputs": false,
     "weak_form": {
       "balance": 100.0,
       "penalty_lp": 1e-4,
@@ -18,7 +18,7 @@
       "num_guesses": 1,
       "num_iterations": 200,
       "threshold_iter": 1e-6,
-      "threshold": 1e-2
+      "threshold": 5e-2
     },
     "model": {
       "variable_names": ["K1", "K2", "Jm1"],

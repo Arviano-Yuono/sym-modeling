@@ -74,20 +74,19 @@ SGEPPY replaces the fixed EUCLID feature library with generated genes:
 W_n = sum_i theta_i * G_i
 ```
 
-For FEM datasets, SGEPPY can fit generated energy features with either direct
-stress matching or the same weak-form/reaction-force target used by EUCLID. The
-usual workflow is:
+For FEM datasets, SGEPPY fits generated energy features with a backend-backed
+weak-form/reaction-force target. The usual workflow is:
 
 1. generates symbolic genes using configurable operators
 2. evaluates genes on invariant variables such as `K1`, `K2`, `Jm1`
 3. reference-normalizes each gene so `G(reference) = 0`
 4. differentiates each gene through invariants to get the feature derivatives
-5. fits sparse coefficients with direct stress or weak-form equilibrium
+5. fits sparse coefficients with weak-form equilibrium
 6. scores candidates with RSS, RMSE, AIC, and AICc
 7. evolves useful genes into the next generation
 
-Synthetic SGEPPY runs have no mesh, boundary conditions, or reaction forces, so
-they keep the older direct Piola-stress sparse-regression fallback.
+SGEPPY requires FEM data because the fitting path uses mesh, boundary
+condition, and reaction-force measurements.
 
 ## SGEPPY Config
 
@@ -118,7 +117,7 @@ The runner expects a top-level `"sgeppy"` object:
     "data_dir": "dataset/fem_data/plate_hole_fenics/NH2",
     "loadsteps": [10, 20, 30],
     "output_dir": "output/sgeppy/nh2_test",
-    "fitting_mode": "weak_form_jax",
+    "backend": "jax",
     "model": {
       "variable_names": ["K1", "K2", "Jm1"],
       "binary_operators": ["add", "sub", "mul", "protected_div"],
@@ -162,24 +161,25 @@ dataset/fem_data/plate_hole_fenics/NH2/
   30/
 ```
 
-Each load step is read with `loadFemData(...)`. Weak-form modes use nodal
-coordinates, displacements, elements, shape gradients, quadrature weights, and
-reaction forces. Direct-stress mode also needs reference Piola columns `Pxx`,
-`Pxy`, `Pyx`, and `Pyy` in `output_elements.csv`.
-
-If `data_dir` is omitted, SGEPPY runs on a synthetic stress dataset. That mode is
-useful for tests and quick algorithm checks, but it has no mesh, boundary
-conditions, or reaction-force measurements.
+Each load step is read with `loadFemData(...)`. SGEPPY's weak-form backend uses
+nodal coordinates, displacements, elements, shape gradients, quadrature weights,
+and reaction forces. The stress CSV columns `Pxx`, `Pxy`, `Pyx`, and `Pyy` are
+still used to build diagnostic stress features and summaries.
 
 ### Important Config Fields
 
 | Field | Meaning |
 | --- | --- |
-| `data_dir` | FEM dataset root. If `null`, use synthetic fallback data. |
+| `data_dir` | FEM dataset root. Required for SGEPPY backend fitting. |
 | `loadsteps` | Load-step folders to use. If omitted, numeric folders are discovered. |
-| `fitting_mode` | `direct_stress`, `weak_form`, or `weak_form_jax`. |
+| `backend` | `jax` by default, or CUDA-only `torch`. |
+| `precision` | `float64` or `float32`. |
+| `cache_enabled` | Enable backend artifact and per-gene evaluator caches. |
+| `cache_size` | Maximum weak-form artifact cache entries. |
+| `cache_device_outputs` | Cache device-resident derivative artifacts when enabled. |
+| `gene_cache_size` | Maximum per-gene evaluator cache entries. |
 | `noise_level` | Additional displacement noise passed to the FEM CSV loader. |
-| `max_elements_per_loadstep` | Optional direct-stress element cap. Use `null` for all elements. |
+| `max_elements_per_loadstep` | Optional element cap per load step. Use `null` for all elements. |
 | `output_dir` | Directory for run artifacts. |
 | `progress_log` | Print progress during evolution. |
 | `generation_log` | Write per-generation best-candidate snapshots. |
@@ -199,34 +199,45 @@ The nested `model` object controls the symbolic search:
 | `fitness_metrics` | Metrics used to rank candidates, for example `["rmse"]` or `["aicc"]`. |
 | `epsilons` | Optional epsilon constraints paired with `fitness_metrics`. |
 
-The nested `weak_form` object controls the Lp sparse solve used by `weak_form`
-and `weak_form_jax`.
+The nested `weak_form` object controls the Lp sparse solve used by weak-form
+fitting.
 
-### `fitting_mode`
+### `backend`
 
-`fitting_mode` controls the regression target used after SGEPPY generates a
-candidate energy library:
+SGEPPY supports two weak-form backends:
 
 ```json
-"fitting_mode": "direct_stress"
+"backend": "jax"
 ```
 
-`direct_stress` is fastest. It fits coefficients by matching generated
-`dW/dF` values to exported Piola stress columns.
+`jax` evaluates generated feature derivatives and weak-form assembly with JAX.
+It is the default. Use `uv sync --extra jax_fem` before running this backend.
 
-`weak_form` uses the EUCLID-style target based on mesh equilibrium and reaction
-forces. It is more FEM-consistent, but slower.
+```json
+"backend": "torch"
+```
 
-`weak_form_jax` uses the same weak-form target, but evaluates generated feature
-derivatives and assembly with JAX. Use `uv sync --extra jax_fem` before running
-this mode.
+`torch` evaluates the same weak-form path with PyTorch tensors on CUDA. This
+backend intentionally has no CPU fallback; use `uv sync --extra torch_fem` and
+ensure an NVIDIA driver plus a CUDA-capable Torch build are available.
 
 The same choice can be made from the CLI:
 
 ```bash
 uv run --extra jax_fem sym-fem-sgeppy \
   --config configs/sgeppy/nh2.json \
-  --fitting-mode weak_form_jax
+  --backend jax
+```
+
+For a small JAX/PyTorch A/B smoke run:
+
+```bash
+uv run --extra jax_fem --extra torch_fem python scripts/benchmark_sgeppy_backends.py \
+  --config configs/sgeppy/nh2.json \
+  --loadsteps 10 \
+  --generations 0 \
+  --population-size 3 \
+  --output-json tmp/sgeppy_backend_ab/nh2.json
 ```
 
 ### `epsilons`

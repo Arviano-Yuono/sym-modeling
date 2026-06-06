@@ -3,23 +3,19 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import time
-from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache, partial
 from typing import Sequence
 
+import geppy as gep
 import numpy as np
+
+from .backend import WeakFormEvaluationCache, backend_timing_keys
 
 
 JAX_FEM_EXTRA = "jax_fem"
 JAX_PRECISIONS = {"float64", "float32"}
-JAX_CACHE_TIMING_KEYS = (
-    "weak_form_jax_cache_hits",
-    "weak_form_jax_cache_misses",
-    "weak_form_jax_cache_entries",
-    "weak_form_jax_gene_execute_seconds",
-    "gene_jit_compile_seconds",
-)
+JAX_TIMING_KEYS = backend_timing_keys("jax")
 
 
 def require_jax_fem_backend(enable_x64: bool | None = True):
@@ -33,7 +29,7 @@ def require_jax_fem_backend(enable_x64: bool | None = True):
             raise ModuleNotFoundError("No module named 'jax_fem'")
     except ModuleNotFoundError as exc:
         raise ImportError(
-            "fitting_mode='weak_form_jax' requires optional dependencies. "
+            "backend='jax' requires optional dependencies. "
             'Install them with: pip install -e ".[jax_fem]"'
         ) from exc
     return jax, jnp
@@ -41,7 +37,7 @@ def require_jax_fem_backend(enable_x64: bool | None = True):
 
 def configure_jax_precision(precision: str):
     if precision not in JAX_PRECISIONS:
-        raise ValueError("jax_precision must be one of: float32, float64.")
+        raise ValueError("precision must be one of: float32, float64.")
     return require_jax_fem_backend(enable_x64=precision == "float64")
 
 
@@ -72,6 +68,110 @@ def is_jax_fem_backend_available() -> bool:
     return True
 
 
+def jax_gene_operators():
+    """JAX implementations of the supported arithmetic/math operators."""
+    _, jnp = require_jax_fem_backend(enable_x64=None)
+    eps = 1e-12
+
+    def _protected_div(a, b):
+        return a / jnp.where(jnp.abs(b) < 1e-6, 1.0, b)
+
+    return {
+        "add": lambda a, b: a + b,
+        "sub": lambda a, b: a - b,
+        "mul": lambda a, b: a * b,
+        "protected_div": _protected_div,
+        "neg": lambda a: -a,
+        "square": lambda a: jnp.square(a),
+        "cube": lambda a: jnp.power(a, 3),
+        "protected_sqrt": lambda a: jnp.sqrt(jnp.abs(a) + eps),
+        "protected_log": lambda a: jnp.log(jnp.abs(a) + eps),
+        "protected_exp": lambda a: jnp.exp(jnp.clip(a, -20.0, 20.0)),
+        "sin": lambda a: jnp.sin(a),
+        "cos": lambda a: jnp.cos(a),
+    }
+
+
+def _variables_from_F(F_row, variable_names):
+    """Compute named strain-invariant variables from one deformation gradient."""
+    _, jnp = require_jax_fem_backend(enable_x64=None)
+    F11, F12, F21, F22 = F_row[0], F_row[1], F_row[2], F_row[3]
+    C11 = F11**2 + F21**2
+    C12 = F11 * F12 + F21 * F22
+    C21 = C12
+    C22 = F12**2 + F22**2
+    I1 = C11 + C22 + 1.0
+    I2 = C11 + C22 - C12 * C21 + C11 * C22
+    I3 = C11 * C22 - C12 * C21
+    J = F11 * F22 - F12 * F21
+    K1 = I1 * jnp.power(I3, -1.0 / 3.0) - 3.0
+    K2 = (I1 + I3 - 1.0) * jnp.power(I3, -2.0 / 3.0) - 3.0
+    lookup = {
+        "I1": I1,
+        "I2": I2,
+        "I3": I3,
+        "J": J,
+        "Jm1": J - 1.0,
+        "K1": K1,
+        "K2": K2,
+        "logI13": jnp.log(K1 / 3.0 + 1.0),
+        "logI23": jnp.log(K2 / 3.0 + 1.0),
+    }
+    return [lookup[name] for name in variable_names]
+
+
+class JaxGeneEvaluationBackend:
+    """JAX strategy for compiling one gene into value and gradient evaluators."""
+
+    name = "jax"
+    default_precision = "float64"
+    compile_timing_key = "jax_gene_compile_seconds"
+
+    def build_primitive_set(self, model):
+        from .sgep import BINARY_OPS, UNARY_OPS
+
+        operators = jax_gene_operators()
+        pset = gep.PrimitiveSet("JaxMain", model.config.variable_names)
+        for name in model.config.unary_operators:
+            if name not in UNARY_OPS:
+                raise ValueError("Unsupported unary operator for JAX backend: %s" % name)
+            pset.add_function(operators[name], 1, name=name)
+        for name in model.config.binary_operators:
+            if name not in BINARY_OPS:
+                raise ValueError("Unsupported binary operator for JAX backend: %s" % name)
+            pset.add_function(operators[name], 2, name=name)
+        return pset
+
+    def make_gene_evaluator(self, gene_fn, variable_names: Sequence[str]):
+        jax, _ = require_jax_fem_backend(enable_x64=None)
+
+        def _scalar_eval(F_row):
+            args = _variables_from_F(F_row, variable_names)
+            return gene_fn(*args)
+
+        _vmap_eval = jax.vmap(_scalar_eval)
+        _vmap_grad = jax.vmap(jax.grad(_scalar_eval))
+
+        @jax.jit
+        def evaluate(F_batch):
+            return _vmap_eval(F_batch), _vmap_grad(F_batch)
+
+        return evaluate
+
+    def empty_result(self, F_batch):
+        _, jnp = require_jax_fem_backend(enable_x64=None)
+        n = F_batch.shape[0]
+        dtype = F_batch.dtype
+        return jnp.zeros((n, 0), dtype=dtype), jnp.zeros((n, 0, 4), dtype=dtype)
+
+    def stack_gene_results(self, values: Sequence, derivatives: Sequence):
+        _, jnp = require_jax_fem_backend(enable_x64=None)
+        return jnp.stack(values, axis=1), jnp.stack(derivatives, axis=1)
+
+    def cache_precision(self, precision: str | None) -> str:
+        return precision or self.default_precision
+
+
 @dataclass(frozen=True)
 class JaxWeakFormCase:
     data: object
@@ -85,97 +185,25 @@ class JaxWeakFormCase:
     num_nodes: int
 
 
-class JaxWeakFormEvaluationCache:
-    """Bounded LRU caches for repeated weak_form_jax individuals."""
+class JaxWeakFormEvaluationCache(WeakFormEvaluationCache):
+    """Bounded LRU caches for repeated JAX weak-form individuals."""
 
     def __init__(
         self,
+        device_name: str = "default",
         enabled: bool = True,
         max_size: int = 256,
         device_outputs: bool = True,
         timing: dict[str, float] | None = None,
     ):
-        self.enabled = bool(enabled)
-        self.max_size = max(0, int(max_size))
-        self.device_outputs = bool(device_outputs)
-        self.timing = timing
-        self._artifacts = OrderedDict()
-        self._sync_entries()
-
-    def derivative_key(
-        self,
-        data_key,
-        model,
-        individual,
-        selected: Sequence[int],
-        variable_names: Sequence[str],
-        precision: str | None,
-        F,
-    ) -> tuple:
-        return (
-            "dqdf",
-            data_key,
-            _individual_signature(individual),
-            tuple(int(index) for index in selected),
-            tuple(variable_names),
-            precision or "array",
-            tuple(getattr(F, "shape", ())),
-            str(getattr(F, "dtype", "")),
+        super().__init__(
+            "jax",
+            device_name=device_name,
+            enabled=enabled,
+            max_size=max_size,
+            device_outputs=device_outputs,
+            timing=timing,
         )
-
-    def weak_artifact_key(
-        self,
-        case_key,
-        model,
-        individual,
-        selected: Sequence[int],
-        variable_names: Sequence[str],
-        precision: str,
-        balance: float,
-    ) -> tuple:
-        return (
-            "weak_artifact",
-            case_key,
-            _individual_signature(individual),
-            tuple(int(index) for index in selected),
-            tuple(variable_names),
-            precision,
-            float(balance),
-        )
-
-    def get_artifact(self, key):
-        if not self.enabled:
-            return None
-        if key in self._artifacts:
-            self._artifacts.move_to_end(key)
-            self._increment("weak_form_jax_cache_hits")
-            return self._artifacts[key]
-        self._increment("weak_form_jax_cache_misses")
-        return None
-
-    def put_artifact(self, key, value) -> None:
-        if not self.enabled or self.max_size <= 0:
-            return
-        self._artifacts[key] = value
-        self._artifacts.move_to_end(key)
-        self._evict(self._artifacts)
-        self._sync_entries()
-
-    def _evict(self, store: OrderedDict) -> None:
-        while len(store) > self.max_size:
-            store.popitem(last=False)
-
-    def _increment(self, key: str, amount: float = 1.0) -> None:
-        if self.timing is not None:
-            self.timing[key] = self.timing.get(key, 0.0) + amount
-
-    def _sync_entries(self) -> None:
-        if self.timing is not None:
-            self.timing["weak_form_jax_cache_entries"] = float(len(self._artifacts))
-
-
-def _individual_signature(individual) -> tuple[str, ...]:
-    return tuple(str(gene) for gene in individual)
 
 
 def prepare_jax_case(cache, precision: str = "float64") -> JaxWeakFormCase:
@@ -209,6 +237,7 @@ def feature_values_and_dqdf_device(
     cache: JaxWeakFormEvaluationCache | None = None,
     gene_cache=None,
     data_key=None,
+    gene_backend: JaxGeneEvaluationBackend | None = None,
 ) -> tuple:
     _, jnp = require_jax_fem_backend(enable_x64=None if precision is not None else True)
     dtype = _jax_dtype(precision) if precision is not None else (F.dtype if hasattr(F, "dtype") else jnp.float64)
@@ -234,7 +263,7 @@ def feature_values_and_dqdf_device(
         if cached is not None:
             return cached
 
-    # Evaluate each gene using its per-gene JIT-compiled evaluator.
+    # Evaluate each gene using its per-gene backend evaluator.
     from .gene_evaluator import evaluate_genes_on_F
 
     execute_start = time.perf_counter()
@@ -246,10 +275,16 @@ def feature_values_and_dqdf_device(
         F,
         variable_names,
         precision=precision or "float64",
+        backend=gene_backend or JaxGeneEvaluationBackend(),
     )
     block_until_ready((features, dqdf))
     if cache is not None and cache.timing is not None:
-        cache.timing["weak_form_jax_gene_execute_seconds"] += time.perf_counter() - execute_start
+        timing_key = cache.timing_key("gene_execute_seconds")
+        cache.timing[timing_key] = (
+            cache.timing.get(timing_key, 0.0)
+            + time.perf_counter()
+            - execute_start
+        )
 
     finite = jnp.all(jnp.isfinite(features)) & jnp.all(jnp.isfinite(dqdf))
     bounded = (jnp.max(jnp.abs(features)) <= value_limit) & (jnp.max(jnp.abs(dqdf)) <= value_limit)
@@ -271,6 +306,7 @@ def feature_values_and_dqdf(
     cache: JaxWeakFormEvaluationCache | None = None,
     gene_cache=None,
     data_key=None,
+    gene_backend: JaxGeneEvaluationBackend | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     features_device, dqdf_device = feature_values_and_dqdf_device(
         model,
@@ -283,6 +319,7 @@ def feature_values_and_dqdf(
         cache=cache,
         gene_cache=gene_cache,
         data_key=data_key,
+        gene_backend=gene_backend,
     )
     features = np.asarray(features_device, dtype=float)
     dqdf = np.asarray(dqdf_device, dtype=float)
@@ -302,6 +339,7 @@ def stress_feature_builder(
     timing: dict[str, float] | None = None,
     cache: JaxWeakFormEvaluationCache | None = None,
     gene_cache=None,
+    gene_backend: JaxGeneEvaluationBackend | None = None,
 ):
     def build(model, individual, X):
         del X
@@ -316,14 +354,17 @@ def stress_feature_builder(
             cache=cache,
             gene_cache=gene_cache,
             data_key=("stress", id(dataset), dataset.num_points),
+            gene_backend=gene_backend,
         )
         block_until_ready(dqdf_device)
         if timing is not None:
-            timing["weak_form_jax_gene_derivative_seconds"] += time.perf_counter() - start
+            key = cache.timing_key("gene_derivative_seconds") if cache is not None else "jax_gene_derivative_seconds"
+            timing[key] = timing.get(key, 0.0) + time.perf_counter() - start
         start = time.perf_counter()
         dqdf = np.asarray(dqdf_device, dtype=float)
         if timing is not None:
-            timing["weak_form_jax_transfer_seconds"] += time.perf_counter() - start
+            key = cache.timing_key("transfer_seconds") if cache is not None else "jax_transfer_seconds"
+            timing[key] = timing.get(key, 0.0) + time.perf_counter() - start
         features = np.zeros((dataset.target_vector.size, len(individual)), dtype=float)
         valid = np.zeros(len(individual), dtype=bool)
         normalized_columns = []
@@ -439,3 +480,116 @@ def compute_residual_operator_device(case: JaxWeakFormCase, weak_lhs, balance: f
 def _valid(values, limit: float) -> bool:
     values = np.asarray(values, dtype=float)
     return bool(values.size and np.all(np.isfinite(values)) and np.max(np.abs(values)) <= limit)
+
+
+class JaxWeakFormBackend:
+    """Strategy object that owns JAX weak-form configuration and caches."""
+
+    name = "jax"
+
+    def __init__(
+        self,
+        precision: str = "float64",
+        cache_enabled: bool = True,
+        cache_size: int = 256,
+        cache_device_outputs: bool = True,
+        gene_cache_size: int = 1024,
+        timing: dict[str, float] | None = None,
+    ):
+        self.precision = precision
+        self.cache_enabled = bool(cache_enabled)
+        self.cache_size = int(cache_size)
+        self.cache_device_outputs = bool(cache_device_outputs)
+        self.gene_cache_size = int(gene_cache_size)
+        self.timing = timing
+        self.gene_backend = JaxGeneEvaluationBackend()
+        self.eval_cache = None
+        self.gene_cache = None
+
+    def configure(self) -> None:
+        from .gene_evaluator import PerGeneEvaluatorCache
+
+        jax, _ = configure_jax_precision(self.precision)
+        try:
+            device_name = str(jax.default_backend())
+        except Exception:
+            device_name = "default"
+        self.eval_cache = JaxWeakFormEvaluationCache(
+            device_name=device_name,
+            enabled=self.cache_enabled,
+            max_size=self.cache_size,
+            device_outputs=self.cache_device_outputs,
+            timing=self.timing,
+        )
+        self.gene_cache = PerGeneEvaluatorCache(
+            enabled=self.cache_enabled,
+            max_size=self.gene_cache_size,
+            timing=self.timing,
+        )
+
+    def make_stress_feature_builder(
+        self,
+        dataset,
+        variable_names: Sequence[str],
+        value_limit: float = 1e8,
+        duplicate_correlation: float = 0.999999,
+    ):
+        self._ensure_configured()
+        return stress_feature_builder(
+            dataset,
+            variable_names,
+            value_limit=value_limit,
+            duplicate_correlation=duplicate_correlation,
+            precision=self.precision,
+            timing=self.timing,
+            cache=self.eval_cache,
+            gene_cache=self.gene_cache,
+            gene_backend=self.gene_backend,
+        )
+
+    def prepare_case(self, cache) -> JaxWeakFormCase:
+        return prepare_jax_case(cache, precision=self.precision)
+
+    def feature_values_and_dqdf_device(
+        self,
+        model,
+        individual,
+        F,
+        variable_names: Sequence[str],
+        gene_indices: Sequence[int] | None = None,
+        value_limit: float = 1e8,
+        data_key=None,
+    ) -> tuple:
+        self._ensure_configured()
+        return feature_values_and_dqdf_device(
+            model,
+            individual,
+            F,
+            variable_names,
+            gene_indices=gene_indices,
+            value_limit=value_limit,
+            precision=self.precision,
+            cache=self.eval_cache,
+            gene_cache=self.gene_cache,
+            data_key=data_key,
+            gene_backend=self.gene_backend,
+        )
+
+    def compute_weak_lhs_device(self, case: JaxWeakFormCase, dqdf):
+        return compute_weak_lhs_device(case, dqdf)
+
+    def compute_reaction_balance_device(self, case: JaxWeakFormCase, weak_lhs, balance: float):
+        return compute_reaction_balance_device(case, weak_lhs, balance)
+
+    def compute_residual_operator_device(self, case: JaxWeakFormCase, weak_lhs, balance: float):
+        return compute_residual_operator_device(case, weak_lhs, balance)
+
+    def block_until_ready(self, value):
+        return block_until_ready(value)
+
+    def timing_key(self, suffix: str) -> str:
+        return "%s_%s" % (self.name, suffix)
+
+    def _ensure_configured(self) -> None:
+        if self.eval_cache is None or self.gene_cache is None:
+            self.configure()

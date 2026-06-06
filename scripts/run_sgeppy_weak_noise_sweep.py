@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
             config = replace(
                 base_config,
                 model=model_config,
-                fitting_mode="weak_form",
+                backend="jax",
                 noise_level=noise_level,
                 output_dir=str(output_dir),
                 progress_log=False if args.quiet else base_config.progress_log,

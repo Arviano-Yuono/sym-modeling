@@ -31,20 +31,9 @@ from sym_modeling.domains.fem.methods.common.weak_form import (
     assemble_B_matrix,
     zip_dofs,
 )
+from .backend import BACKENDS, PRECISIONS, backend_timing_keys, create_weak_form_backend, empty_backend_timing
 
-WEAK_FORM_JAX_TIMING_KEYS = (
-    "weak_form_jax_gene_derivative_seconds",
-    "weak_form_jax_weak_lhs_seconds",
-    "weak_form_jax_transfer_seconds",
-    "weak_form_jax_lp_seconds",
-    "weak_form_jax_evaluation_seconds",
-    "weak_form_jax_evaluations",
-    "weak_form_jax_cache_hits",
-    "weak_form_jax_cache_misses",
-    "weak_form_jax_cache_entries",
-    "weak_form_jax_gene_execute_seconds",
-    "gene_jit_compile_seconds",
-)
+JAX_TIMING_KEYS = backend_timing_keys("jax")
 
 
 @dataclass
@@ -63,7 +52,7 @@ class WeakFormConfig:
 @dataclass
 class SGEPWorkflowConfig:
     model: SGEPConfig = field(default_factory=SGEPConfig)
-    fitting_mode: str = "direct_stress"
+    backend: str = "jax"
     weak_form: WeakFormConfig = field(default_factory=WeakFormConfig)
     data_dir: str | None = None
     loadsteps: list[int] | None = None
@@ -78,23 +67,23 @@ class SGEPWorkflowConfig:
     output_dir: str = "output/sgeppy_results"
     progress_log: bool = True
     generation_log: bool = True
-    jax_precision: str = "float64"
-    jax_cache_enabled: bool = True
-    jax_cache_size: int = 256
-    jax_cache_device_outputs: bool = True
-    jax_gene_cache_size: int = 1024
+    precision: str = "float64"
+    cache_enabled: bool = True
+    cache_size: int = 256
+    cache_device_outputs: bool = True
+    gene_cache_size: int = 1024
 
     def __post_init__(self) -> None:
-        if self.fitting_mode not in {"direct_stress", "weak_form", "weak_form_jax"}:
-            raise ValueError("fitting_mode must be one of: direct_stress, weak_form, weak_form_jax.")
-        if self.jax_precision not in {"float64", "float32"}:
-            raise ValueError("jax_precision must be one of: float64, float32.")
-        self.jax_cache_size = int(self.jax_cache_size)
-        if self.jax_cache_size < 0:
-            raise ValueError("jax_cache_size must be non-negative.")
-        self.jax_gene_cache_size = int(self.jax_gene_cache_size)
-        if self.jax_gene_cache_size < 0:
-            raise ValueError("jax_gene_cache_size must be non-negative.")
+        if self.backend not in BACKENDS:
+            raise ValueError("backend must be one of: jax, torch.")
+        if self.precision not in PRECISIONS:
+            raise ValueError("precision must be one of: float64, float32.")
+        self.cache_size = int(self.cache_size)
+        if self.cache_size < 0:
+            raise ValueError("cache_size must be non-negative.")
+        self.gene_cache_size = int(self.gene_cache_size)
+        if self.gene_cache_size < 0:
+            raise ValueError("gene_cache_size must be non-negative.")
 
 
 @dataclass
@@ -128,61 +117,28 @@ class SGEPWorkflow:
         self.weak_form_cache: list[_WeakFormDataCache] | None = None
         self.model: SGEP | None = None
         self.result: SGEPResult | None = None
-        self._weak_form_jax_timing = _empty_weak_form_jax_timing()
-        self._weak_form_jax_eval_cache = None
-        self._weak_form_jax_gene_cache = None
+        self._backend_timing = empty_backend_timing(self.config.backend)
+        self._backend = None
         self._generation_output_paths: dict[str, str] = {}
 
     def train(self) -> SGEPResult:
         wall_start = time.perf_counter()
         cpu_start = time.process_time()
-        if self.config.fitting_mode in {"weak_form", "weak_form_jax"} and self.config.data_dir is None:
-            raise ValueError("fitting_mode='%s' requires data_dir." % self.config.fitting_mode)
-        if self.config.fitting_mode == "weak_form_jax":
-            from .gene_evaluator import PerGeneJitCache
-            from .jax_backend import JaxWeakFormEvaluationCache, configure_jax_precision
-
-            configure_jax_precision(self.config.jax_precision)
-            self._weak_form_jax_eval_cache = JaxWeakFormEvaluationCache(
-                enabled=self.config.jax_cache_enabled,
-                max_size=self.config.jax_cache_size,
-                device_outputs=self.config.jax_cache_device_outputs,
-                timing=self._weak_form_jax_timing,
-            )
-            self._weak_form_jax_gene_cache = PerGeneJitCache(
-                enabled=self.config.jax_cache_enabled,
-                max_size=self.config.jax_gene_cache_size,
-                timing=self._weak_form_jax_timing,
-            )
+        if self.config.data_dir is None:
+            raise ValueError("backend='%s' requires data_dir." % self.config.backend)
+        self._backend = create_weak_form_backend(self.config, self._backend_timing)
+        self._backend.configure()
         self.dataset = self._load_dataset()
-        self.fem_datasets = self._load_fem_datasets() if self.config.fitting_mode in {"weak_form", "weak_form_jax"} else None
-        self.weak_form_cache = self._build_weak_form_cache() if self.fem_datasets is not None else None
+        self.fem_datasets = self._load_fem_datasets()
+        self.weak_form_cache = self._build_weak_form_cache()
         variables = invariant_variables(self.dataset, self.config.model.variable_names)
-        if self.config.fitting_mode == "weak_form_jax":
-            from .jax_backend import stress_feature_builder as jax_stress_feature_builder
-
-            builder = jax_stress_feature_builder(
-                self.dataset,
-                self.config.model.variable_names,
-                value_limit=self.config.invalid_value_limit,
-                duplicate_correlation=self.config.duplicate_correlation,
-                precision=self.config.jax_precision,
-                timing=self._weak_form_jax_timing,
-                cache=self._weak_form_jax_eval_cache,
-                gene_cache=self._weak_form_jax_gene_cache,
-            )
-        else:
-            builder = stress_feature_builder(
-                self.dataset,
-                self.config.model.variable_names,
-                derivative_step=self.config.derivative_step,
-                value_limit=self.config.invalid_value_limit,
-                duplicate_correlation=self.config.duplicate_correlation,
-            )
-        if self.config.fitting_mode == "weak_form_jax":
-            evaluator = self._weak_form_jax_evaluator(builder)
-        else:
-            evaluator = self._weak_form_evaluator(builder) if self.config.fitting_mode == "weak_form" else None
+        builder = self._backend.make_stress_feature_builder(
+            self.dataset,
+            self.config.model.variable_names,
+            value_limit=self.config.invalid_value_limit,
+            duplicate_correlation=self.config.duplicate_correlation,
+        )
+        evaluator = self._backend_evaluator(builder)
         self.model = SGEP(self.config.model)
         self._generation_output_paths = {}
         generation_callback = self._initialize_generation_log(self.model) if self.config.generation_log else None
@@ -207,8 +163,7 @@ class SGEPWorkflow:
             "wall_seconds": time.perf_counter() - wall_start,
             "cpu_seconds": time.process_time() - cpu_start,
         }
-        if self.config.fitting_mode == "weak_form_jax":
-            timing.update(self._weak_form_jax_timing)
+        timing.update(self._backend_timing)
         self.result = SGEPResult(
             best_expression=_reference_normalized_expression(self.model),
             theta=self.model.best_individual.theta,
@@ -233,7 +188,7 @@ class SGEPWorkflow:
 
     def _load_dataset(self) -> StressDataset:
         if self.config.data_dir is not None:
-            self._log("Loading direct-stress data from %s." % self.config.data_dir)
+            self._log("Loading FEM stress data from %s." % self.config.data_dir)
             return load_stress_dataset_from_euclid_csv(
                 self.config.data_dir,
                 loadsteps=self.config.loadsteps,
@@ -263,106 +218,19 @@ class SGEPWorkflow:
             datasets.append(data)
         return datasets
 
-    def _weak_form_evaluator(self, stress_builder):
+    def _backend_evaluator(self, stress_builder):
         if self.weak_form_cache is None and self.fem_datasets is not None:
             self.weak_form_cache = self._build_weak_form_cache()
         weak_caches = self.weak_form_cache or []
         fem_datasets = [cache.data for cache in weak_caches]
         variable_names = self.config.model.variable_names
 
-        def evaluate(model: SGEP, individual, X: np.ndarray, y: np.ndarray):
-            stress_features, valid = stress_builder(model, individual, X)
-            gene_valid = np.asarray(valid[: len(individual)], dtype=bool)
-            valid_indices = np.flatnonzero(gene_valid)
-            if valid_indices.size == 0:
-                raise ValueError("No valid weak-form genes.")
-
-            weak_lhs_by_step = []
-            weak_config = self._weak_form_config()
-            lhs = np.zeros((valid_indices.size, valid_indices.size), dtype=float)
-            rhs = np.zeros(valid_indices.size, dtype=float)
-            for cache in weak_caches:
-                feature_set = geppy_feature_set_for_cached_fem_data(
-                    model,
-                    individual,
-                    cache,
-                    variable_names,
-                    valid_indices,
-                    derivative_step=self.config.derivative_step,
-                    value_limit=self.config.invalid_value_limit,
-                )
-                cache.data.featureSet = feature_set
-                weak_lhs = _compute_cached_weak_lhs(cache, feature_set)
-                step_lhs, step_rhs = _cached_reaction_balance(cache, weak_lhs, weak_config)
-                lhs += step_lhs
-                rhs += step_rhs
-                weak_lhs_by_step.append(weak_lhs)
-
-            theta_valid = apply_penalty_lp_iteration(
-                fem_datasets,
-                lhs,
-                rhs,
-                weak_config,
-                verbose=False,
-            )
-
-            theta = np.zeros(stress_features.shape[1], dtype=float)
-            theta[valid_indices] = theta_valid
-            active = np.abs(theta) >= self.config.weak_form.threshold
-            residual = _cached_weak_residual_vector(weak_caches, weak_lhs_by_step, theta_valid, weak_config)
-            metrics = regression_metrics(
-                np.zeros_like(residual),
-                residual,
-                num_parameters=int(np.count_nonzero(active)),
-            )
-            prediction = stress_features @ theta if stress_features.shape[1] == theta.size else np.zeros_like(y)
-            return (
-                SparseFitResult(
-                    theta=theta,
-                    prediction=prediction,
-                    active_mask=active,
-                    metrics=metrics,
-                    column_scales=np.ones_like(theta),
-                ),
-                valid,
-            )
-
-        return evaluate
-
-    def _weak_form_jax_evaluator(self, stress_builder):
-        if self.weak_form_cache is None and self.fem_datasets is not None:
-            self.weak_form_cache = self._build_weak_form_cache()
-        weak_caches = self.weak_form_cache or []
-        fem_datasets = [cache.data for cache in weak_caches]
-        variable_names = self.config.model.variable_names
-
-        from .gene_evaluator import PerGeneJitCache
-        from .jax_backend import (
-            JaxWeakFormEvaluationCache,
-            block_until_ready,
-            compute_reaction_balance_device,
-            compute_residual_operator_device,
-            compute_weak_lhs_device,
-            feature_values_and_dqdf_device,
-            prepare_jax_case,
-        )
-
-        if self._weak_form_jax_eval_cache is None:
-            self._weak_form_jax_eval_cache = JaxWeakFormEvaluationCache(
-                enabled=self.config.jax_cache_enabled,
-                max_size=self.config.jax_cache_size,
-                device_outputs=self.config.jax_cache_device_outputs,
-                timing=self._weak_form_jax_timing,
-            )
-        if self._weak_form_jax_gene_cache is None:
-            self._weak_form_jax_gene_cache = PerGeneJitCache(
-                enabled=self.config.jax_cache_enabled,
-                max_size=self.config.jax_gene_cache_size,
-                timing=self._weak_form_jax_timing,
-            )
-        eval_cache = self._weak_form_jax_eval_cache
-        gene_cache = self._weak_form_jax_gene_cache
-        jax_cases = [prepare_jax_case(cache, precision=self.config.jax_precision) for cache in weak_caches]
+        if self._backend is None:
+            self._backend = create_weak_form_backend(self.config, self._backend_timing)
+            self._backend.configure()
+        backend = self._backend
+        eval_cache = backend.eval_cache
+        backend_cases = [backend.prepare_case(cache) for cache in weak_caches]
 
         def evaluate(model: SGEP, individual, X: np.ndarray, y: np.ndarray):
             evaluation_start = time.perf_counter()
@@ -370,22 +238,29 @@ class SGEPWorkflow:
             gene_valid = np.asarray(valid[: len(individual)], dtype=bool)
             valid_indices = np.flatnonzero(gene_valid)
             if valid_indices.size == 0:
-                raise ValueError("No valid JAX weak-form genes.")
+                raise ValueError("No valid %s weak-form genes." % backend.name)
 
             residual_operators = []
             weak_config = self._weak_form_config()
             lhs = np.zeros((valid_indices.size, valid_indices.size), dtype=float)
             rhs = np.zeros(valid_indices.size, dtype=float)
             balance = float(getattr(weak_config, "balance", 100.0))
-            for case_index, jax_case in enumerate(jax_cases):
-                case_key = ("loadstep", case_index, id(jax_case.data), tuple(getattr(jax_case.F, "shape", ())))
+            for case_index, backend_case in enumerate(backend_cases):
+                case_key = (
+                    "loadstep",
+                    case_index,
+                    id(backend_case.data),
+                    tuple(getattr(backend_case.F, "shape", ())),
+                    str(getattr(backend_case.F, "dtype", "")),
+                    str(getattr(backend_case.F, "device", "")),
+                )
                 artifact_key = eval_cache.weak_artifact_key(
                     case_key,
                     model,
                     individual,
                     valid_indices,
                     variable_names,
-                    self.config.jax_precision,
+                    self.config.precision,
                     balance,
                 )
                 cached_artifact = eval_cache.get_artifact(artifact_key)
@@ -397,35 +272,43 @@ class SGEPWorkflow:
                     continue
 
                 start = time.perf_counter()
-                _, dqdf = feature_values_and_dqdf_device(
+                _, dqdf = backend.feature_values_and_dqdf_device(
                     model,
                     individual,
-                    jax_case.F,
+                    backend_case.F,
                     variable_names,
                     gene_indices=valid_indices,
                     value_limit=self.config.invalid_value_limit,
-                    precision=self.config.jax_precision,
-                    cache=eval_cache,
-                    gene_cache=self._weak_form_jax_gene_cache,
-                    data_key=("weak", case_index, id(jax_case.data), tuple(getattr(jax_case.F, "shape", ()))),
+                    data_key=(
+                        "weak",
+                        case_index,
+                        id(backend_case.data),
+                        tuple(getattr(backend_case.F, "shape", ())),
+                        str(getattr(backend_case.F, "dtype", "")),
+                        str(getattr(backend_case.F, "device", "")),
+                    ),
                 )
-                block_until_ready(dqdf)
-                self._weak_form_jax_timing["weak_form_jax_gene_derivative_seconds"] += time.perf_counter() - start
+                backend.block_until_ready(dqdf)
+                self._backend_timing[backend.timing_key("gene_derivative_seconds")] += time.perf_counter() - start
 
                 start = time.perf_counter()
-                weak_lhs = compute_weak_lhs_device(jax_case, dqdf)
-                step_lhs_device, step_rhs_device = compute_reaction_balance_device(jax_case, weak_lhs, balance)
-                residual_matrix_device, residual_target_device = compute_residual_operator_device(jax_case, weak_lhs, balance)
-                block_until_ready((step_lhs_device, step_rhs_device, residual_matrix_device, residual_target_device))
-                self._weak_form_jax_timing["weak_form_jax_weak_lhs_seconds"] += time.perf_counter() - start
+                weak_lhs = backend.compute_weak_lhs_device(backend_case, dqdf)
+                step_lhs_device, step_rhs_device = backend.compute_reaction_balance_device(backend_case, weak_lhs, balance)
+                residual_matrix_device, residual_target_device = backend.compute_residual_operator_device(
+                    backend_case,
+                    weak_lhs,
+                    balance,
+                )
+                backend.block_until_ready((step_lhs_device, step_rhs_device, residual_matrix_device, residual_target_device))
+                self._backend_timing[backend.timing_key("weak_lhs_seconds")] += time.perf_counter() - start
 
                 start = time.perf_counter()
-                step_lhs = np.asarray(step_lhs_device, dtype=float)
-                step_rhs = np.asarray(step_rhs_device, dtype=float)
+                step_lhs = _device_to_numpy(step_lhs_device)
+                step_rhs = _device_to_numpy(step_rhs_device)
                 residual_operators.append(
                     (
-                        np.asarray(residual_matrix_device, dtype=float),
-                        np.asarray(residual_target_device, dtype=float),
+                        _device_to_numpy(residual_matrix_device),
+                        _device_to_numpy(residual_target_device),
                     )
                 )
                 eval_cache.put_artifact(
@@ -436,7 +319,7 @@ class SGEPWorkflow:
                         residual_operators[-1],
                     ),
                 )
-                self._weak_form_jax_timing["weak_form_jax_transfer_seconds"] += time.perf_counter() - start
+                self._backend_timing[backend.timing_key("transfer_seconds")] += time.perf_counter() - start
                 lhs += step_lhs
                 rhs += step_rhs
 
@@ -457,7 +340,7 @@ class SGEPWorkflow:
                 cost_fn=weak_cost,
                 verbose=False,
             )
-            self._weak_form_jax_timing["weak_form_jax_lp_seconds"] += time.perf_counter() - start
+            self._backend_timing[backend.timing_key("lp_seconds")] += time.perf_counter() - start
 
             theta = np.zeros(stress_features.shape[1], dtype=float)
             theta[valid_indices] = theta_valid
@@ -469,8 +352,8 @@ class SGEPWorkflow:
                 num_parameters=int(np.count_nonzero(active)),
             )
             prediction = stress_features @ theta if stress_features.shape[1] == theta.size else np.zeros_like(y)
-            self._weak_form_jax_timing["weak_form_jax_evaluation_seconds"] += time.perf_counter() - evaluation_start
-            self._weak_form_jax_timing["weak_form_jax_evaluations"] += 1.0
+            self._backend_timing[backend.timing_key("evaluation_seconds")] += time.perf_counter() - evaluation_start
+            self._backend_timing[backend.timing_key("evaluations")] += 1.0
             return (
                 SparseFitResult(
                     theta=theta,
@@ -483,6 +366,9 @@ class SGEPWorkflow:
             )
 
         return evaluate
+
+    def _jax_evaluator(self, stress_builder):
+        return self._backend_evaluator(stress_builder)
 
     def _build_weak_form_cache(self) -> list[_WeakFormDataCache]:
         variable_names = self.config.model.variable_names
@@ -827,8 +713,16 @@ def _residual_vector_from_operators(
     return np.concatenate(residuals)
 
 
-def _empty_weak_form_jax_timing() -> dict[str, float]:
-    return {key: 0.0 for key in WEAK_FORM_JAX_TIMING_KEYS}
+def _device_to_numpy(value) -> np.ndarray:
+    if hasattr(value, "detach"):
+        value = value.detach()
+        if hasattr(value, "cpu"):
+            value = value.cpu()
+    return np.asarray(value, dtype=float)
+
+
+def _empty_jax_timing() -> dict[str, float]:
+    return empty_backend_timing("jax")
 
 
 def _reference_normalized_expression(model: SGEP, individual=None) -> str:

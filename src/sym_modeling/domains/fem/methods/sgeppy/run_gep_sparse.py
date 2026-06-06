@@ -107,21 +107,20 @@ def _apply_overrides(config: SGEPWorkflowConfig, args: argparse.Namespace) -> SG
         "loadsteps",
         "noise_level",
         "output_dir",
-        "jax_precision",
-        "jax_cache_size",
-        "jax_gene_cache_size",
+        "backend",
+        "precision",
+        "cache_size",
+        "gene_cache_size",
     ):
         value = getattr(args, key)
         if value is not None:
             workflow_values[key] = value
-    if args.disable_jax_cache:
-        workflow_values["jax_cache_enabled"] = False
-    if args.disable_jax_cache_device_outputs:
-        workflow_values["jax_cache_device_outputs"] = False
+    if args.disable_cache:
+        workflow_values["cache_enabled"] = False
+    if args.disable_cache_device_outputs:
+        workflow_values["cache_device_outputs"] = False
     if args.disable_generation_log:
         workflow_values["generation_log"] = False
-    if args.fitting_mode is not None:
-        workflow_values["fitting_mode"] = args.fitting_mode
     if args.loadsteps is not None:
         workflow_values["loadsteps"] = _parse_loadsteps(args.loadsteps)
     if args.quiet:
@@ -152,12 +151,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--loadsteps", default=None, help="Comma-separated load steps.")
     parser.add_argument("--noise-level", type=float, default=None, help="Additional FEM displacement noise level.")
-    parser.add_argument("--fitting-mode", choices=("direct_stress", "weak_form", "weak_form_jax"), default=None)
-    parser.add_argument("--jax-precision", choices=("float64", "float32"), default=None)
-    parser.add_argument("--jax-cache-size", type=int, default=None)
-    parser.add_argument("--jax-gene-cache-size", type=int, default=None)
-    parser.add_argument("--disable-jax-cache", action="store_true", default=False)
-    parser.add_argument("--disable-jax-cache-device-outputs", action="store_true", default=False)
+    parser.add_argument("--backend", choices=("jax", "torch"), default=None)
+    parser.add_argument("--precision", choices=("float64", "float32"), default=None)
+    parser.add_argument("--cache-size", type=int, default=None)
+    parser.add_argument("--gene-cache-size", type=int, default=None)
+    parser.add_argument("--disable-cache", action="store_true", default=False)
+    parser.add_argument("--disable-cache-device-outputs", action="store_true", default=False)
     parser.add_argument("--disable-generation-log", action="store_true", default=False)
     parser.add_argument("--generations", type=int, default=None)
     parser.add_argument("--population-size", type=int, default=None)
