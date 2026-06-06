@@ -1,0 +1,38 @@
+services:
+  fenicsx:
+    build:
+      context: .
+    image: sym-modeling-fenicsx:latest
+    working_dir: /workspace
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    volumes:
+      - .:/workspace
+    environment:
+      MPLBACKEND: Agg
+      PYTHONUNBUFFERED: "1"
+      PYVISTA_OFF_SCREEN: "true"
+    stdin_open: true
+    tty: true
+
+  lab:
+    build:
+      context: .
+    image: sym-modeling-fenicsx:latest
+    working_dir: /workspace
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    volumes:
+      - .:/workspace
+    ports:
+      - "8888:8888"
+    environment:
+      MPLBACKEND: Agg
+      PYTHONUNBUFFERED: "1"
+      PYVISTA_OFF_SCREEN: "true"
+    command: >
+      python3 -m jupyter lab
+      --ip=0.0.0.0
+      --port=8888
+      --no-browser
+      --allow-root
+      --ServerApp.token=''
+      --ServerApp.password=''
