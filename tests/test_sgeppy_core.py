@@ -32,6 +32,7 @@ from sym_modeling.domains.fem.io.hyperelastic import (  # noqa: E402
 from sym_modeling.domains.fem.methods.common.weak_form import assemble_B_matrix  # noqa: E402
 from sym_modeling.domains.fem.methods.sgeppy import SGEP as GeppySGEP  # noqa: E402
 from sym_modeling.domains.fem.methods.sgeppy import SGEPConfig as GeppySGEPConfig  # noqa: E402
+from sym_modeling.domains.fem.methods.sgeppy.sgep import BatchEvaluationResult  # noqa: E402
 from sym_modeling.domains.fem.methods.sgeppy import operator as sgeppy_ops  # noqa: E402
 from sym_modeling.domains.fem.methods.sgeppy.run_gep_sparse import (  # noqa: E402
     _apply_overrides,
@@ -56,7 +57,9 @@ from sym_modeling.domains.fem.methods.sgeppy.jax_backend import (  # noqa: E402
 from sym_modeling.domains.fem.methods.sgeppy.torch_backend import (  # noqa: E402
     TORCH_TIMING_KEYS,
     TorchGeneEvaluationBackend,
+    TorchWeakFormBackend,
     feature_values_and_dqdf as torch_feature_values_and_dqdf,
+    filter_stress_columns_device,
     is_torch_cuda_backend_available,
     require_torch_backend,
     stress_feature_builder as torch_stress_feature_builder,
@@ -200,6 +203,48 @@ class SGEPPYTests(unittest.TestCase):
         self.assertEqual(features.shape, (3, 2))
         self.assertTrue(np.allclose(features[:, 0], X[:, 0]))
         self.assertTrue(np.allclose(features[:, 1], X[:, 1]))
+
+    def test_batch_evaluator_assigns_individual_results(self):
+        model = GeppySGEP(
+            GeppySGEPConfig(
+                variable_names=("x",),
+                binary_operators=("add",),
+                unary_operators=(),
+                head_length=1,
+                n_genes=1,
+                population_size=2,
+                n_elites=1,
+                fitness_metrics=("rmse",),
+                fit_intercept=False,
+                verbose=False,
+            )
+        ).build()
+        individuals = [model.toolbox.individual(), model.toolbox.individual()]
+        model._X = np.ones((2, 1), dtype=float)
+        model._y = np.zeros(2, dtype=float)
+
+        def batch_evaluator(model_arg, batch, X, y):
+            del model_arg, X, y
+            results = []
+            for index, _ in enumerate(batch):
+                theta = np.array([float(index + 1)], dtype=float)
+                fit = SimpleNamespace(
+                    theta=theta,
+                    prediction=np.zeros(2, dtype=float),
+                    active_mask=np.array([True], dtype=bool),
+                    metrics=SimpleNamespace(rmse=float(index + 0.25)),
+                    column_scales=np.ones_like(theta),
+                )
+                results.append(BatchEvaluationResult(fit=fit, valid_mask=np.array([True], dtype=bool)))
+            return results
+
+        model._batch_evaluator = batch_evaluator
+        fitnesses = model.evaluate_batch(individuals)
+
+        self.assertEqual(fitnesses, [(0.25,), (1.25,)])
+        self.assertTrue(np.allclose(individuals[0].theta, [1.0]))
+        self.assertTrue(np.allclose(individuals[1].theta, [2.0]))
+        self.assertTrue(np.array_equal(individuals[0].valid_mask, [True]))
 
     def test_sparse_fit_recovers_separate_gene_coefficients(self):
         model = self._model()
@@ -1447,6 +1492,79 @@ class SGEPPYTests(unittest.TestCase):
             rtol=1e-10,
         )
 
+    @unittest.skipUnless(TORCH_CUDA_AVAILABLE, "Torch-CUDA optional dependencies are not installed or CUDA is unavailable.")
+    def test_torch_gpu_stress_filter_preserves_cpu_duplicate_policy(self):
+        import torch
+
+        columns = torch.as_tensor(
+            np.array(
+                [
+                    [1.0, 2.0, 0.0, 1e9],
+                    [0.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0],
+                ],
+                dtype=float,
+            ),
+            dtype=torch.float64,
+            device=torch.device("cuda"),
+        )
+
+        filtered, valid = filter_stress_columns_device(
+            columns,
+            value_limit=1e8,
+            duplicate_correlation=0.999,
+        )
+
+        self.assertTrue(np.array_equal(valid.detach().cpu().numpy(), [True, False, False, False]))
+        np.testing.assert_allclose(filtered[:, 0].detach().cpu().numpy(), [1.0, 0.0, 0.0])
+        np.testing.assert_allclose(filtered[:, 1:].detach().cpu().numpy(), np.zeros((3, 3)))
+
+    @unittest.skipUnless(TORCH_CUDA_AVAILABLE, "Torch-CUDA optional dependencies are not installed or CUDA is unavailable.")
+    def test_torch_population_gene_batch_matches_single_individual_path(self):
+        dataset = synthetic_neo_hookean_dataset(num_samples=4, seed=14)
+        variable_names = ("K1", "Jm1")
+        model = self._model(
+            variable_names=variable_names,
+            n_genes=2,
+            fit_intercept=False,
+            binary_operators=("add",),
+        )
+        individual_a = self._individual(
+            model,
+            (
+                self._terminal_gene(model, "K1"),
+                self._terminal_gene(model, "Jm1"),
+            ),
+        )
+        individual_b = self._individual(
+            model,
+            (
+                self._binary_gene(model, "add", "K1", "Jm1"),
+                self._terminal_gene(model, "K1"),
+            ),
+        )
+        backend = TorchWeakFormBackend(timing={})
+        backend.configure()
+
+        batch_results = backend.population_feature_values_and_dqdf_device(
+            model,
+            [individual_a, individual_b],
+            dataset.F,
+            variable_names,
+            gene_indices_by_individual=[[0, 1], [0, 1]],
+        )
+
+        for individual, (features_device, dqdf_device) in zip((individual_a, individual_b), batch_results):
+            features_single, dqdf_single = torch_feature_values_and_dqdf(
+                model,
+                individual,
+                dataset.F,
+                variable_names,
+                precision="float64",
+            )
+            np.testing.assert_allclose(features_device.detach().cpu().numpy(), features_single, atol=1e-10, rtol=1e-10)
+            np.testing.assert_allclose(dqdf_device.detach().cpu().numpy(), dqdf_single, atol=1e-10, rtol=1e-10)
+
     @unittest.skipUnless(
         TORCH_CUDA_AVAILABLE and is_jax_fem_backend_available(),
         "Torch-CUDA and JAX/JAX-FEM optional dependencies are required.",
@@ -1544,10 +1662,21 @@ class SGEPPYTests(unittest.TestCase):
                 model._as_matrix(variables),
                 workflow.dataset.target_vector,
             )
+            single_evaluator = workflow._backend_evaluator(builder)
+            batch_evaluator = workflow._backend_batch_evaluator(single_evaluator)
+            batch_result = batch_evaluator(
+                model,
+                [individual],
+                model._as_matrix(variables),
+                workflow.dataset.target_vector,
+            )[0]
 
             self.assertTrue(np.array_equal(valid, [True, True]))
             self.assertLess(fit.metrics.rmse, 1e-8)
             self.assertTrue(np.allclose(fit.theta, expected_theta, atol=1e-6))
+            self.assertTrue(np.array_equal(batch_result.valid_mask, [True, True]))
+            self.assertLess(batch_result.fit.metrics.rmse, 1e-8)
+            self.assertTrue(np.allclose(batch_result.fit.theta, expected_theta, atol=1e-6))
             for key in TORCH_TIMING_KEYS:
                 self.assertIn(key, workflow._backend_timing)
                 self.assertGreaterEqual(workflow._backend_timing[key], 0.0)
