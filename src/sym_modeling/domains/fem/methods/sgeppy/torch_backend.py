@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Sequence
 
 import geppy as gep
@@ -14,7 +14,15 @@ from .backend import WeakFormEvaluationCache, backend_timing_keys
 
 TORCH_FEM_EXTRA = "torch_fem"
 TORCH_PRECISIONS = {"float64", "float32"}
-TORCH_TIMING_KEYS = backend_timing_keys("torch")
+TORCH_POPULATION_GENE_CHUNK_SIZE = 128
+TORCH_JACREV_CHUNK_SIZE = 16
+TORCH_BATCH_TIMING_KEYS = (
+    "torch_population_gene_seconds",
+    "torch_gpu_filter_seconds",
+    "torch_lazy_materialize_seconds",
+    "torch_population_gene_oom_retries",
+)
+TORCH_TIMING_KEYS = backend_timing_keys("torch") + TORCH_BATCH_TIMING_KEYS
 
 
 def require_torch_backend():
@@ -74,6 +82,24 @@ def block_until_ready(value):
     if hasattr(value, "is_cuda") and value.is_cuda:
         torch.cuda.synchronize(value.device)
     return value
+
+
+def _device_to_numpy(value) -> np.ndarray:
+    if hasattr(value, "detach"):
+        value = value.detach()
+        if hasattr(value, "cpu"):
+            value = value.cpu()
+    return np.asarray(value, dtype=float)
+
+
+def _is_torch_oom_error(torch, exc: BaseException) -> bool:
+    oom_type = getattr(torch, "OutOfMemoryError", RuntimeError)
+    return isinstance(exc, oom_type) or "out of memory" in str(exc).lower()
+
+
+def _recover_after_torch_oom(torch) -> None:
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def torch_gene_operators():
@@ -257,15 +283,13 @@ class TorchBatchGeneEvaluatorCache:
         self._store.clear()
 
 
-def _make_joint_gene_evaluator(model, individual, selected: Sequence[int], variable_names: Sequence[str], gene_backend):
+def _make_joint_gene_evaluator_for_genes(model, genes: Sequence, variable_names: Sequence[str], gene_backend):
     torch = require_torch_backend()
     torch_func = importlib.import_module("torch.func")
     from .gene_evaluator import compile_gene_function
 
-    gene_fns = [
-        compile_gene_function(individual[int(gene_index)], model, gene_backend)
-        for gene_index in selected
-    ]
+    gene_fns = [compile_gene_function(gene, model, gene_backend) for gene in genes]
+    jacrev_chunk_size = max(1, min(TORCH_JACREV_CHUNK_SIZE, len(gene_fns)))
 
     def _vector_eval(variable_row):
         args = [variable_row[index] for index in range(len(variable_names))]
@@ -278,7 +302,7 @@ def _make_joint_gene_evaluator(model, individual, selected: Sequence[int], varia
         return torch.stack(tuple(values), dim=0)
 
     vmap_eval = torch_func.vmap(_vector_eval)
-    vmap_jacobian = torch_func.vmap(torch_func.jacrev(_vector_eval))
+    vmap_jacobian = torch_func.vmap(torch_func.jacrev(_vector_eval, chunk_size=jacrev_chunk_size))
 
     def evaluate(variables, dvariables_dF):
         features = vmap_eval(variables)
@@ -287,6 +311,58 @@ def _make_joint_gene_evaluator(model, individual, selected: Sequence[int], varia
         return features, dqdf
 
     return evaluate
+
+
+def _make_joint_gene_evaluator(model, individual, selected: Sequence[int], variable_names: Sequence[str], gene_backend):
+    genes = [individual[int(gene_index)] for gene_index in selected]
+    return _make_joint_gene_evaluator_for_genes(model, genes, variable_names, gene_backend)
+
+
+def evaluate_gene_objects_with_shared_invariants(
+    batch_cache,
+    model,
+    genes: Sequence,
+    F_batch,
+    variable_names,
+    precision="float64",
+    gene_backend=None,
+):
+    """Evaluate an explicit sequence of genes with one shared invariant pass."""
+    torch = require_torch_backend()
+    if not genes:
+        dtype = _torch_dtype(torch, precision)
+        device = torch.device("cuda")
+        F_batch = _as_cuda_tensor(torch, F_batch, dtype, device)
+        return (
+            torch.zeros((F_batch.shape[0], 0), dtype=dtype, device=device),
+            torch.zeros((F_batch.shape[0], 0, 4), dtype=dtype, device=device),
+        )
+
+    gene_backend = gene_backend or TorchGeneEvaluationBackend()
+    precision_key = gene_backend.cache_precision(precision)
+    gene_strings = tuple(str(gene) for gene in genes)
+    evaluator = None
+    if batch_cache is not None:
+        evaluator = batch_cache.get(gene_strings, variable_names, precision_key)
+
+    if evaluator is None:
+        compile_start = time.perf_counter()
+        evaluator = _make_joint_gene_evaluator_for_genes(model, genes, variable_names, gene_backend)
+        if batch_cache is not None:
+            batch_cache.put(gene_strings, variable_names, precision_key, evaluator)
+            if batch_cache.timing is not None:
+                batch_cache.timing[gene_backend.compile_timing_key] = (
+                    batch_cache.timing.get(gene_backend.compile_timing_key, 0.0)
+                    + time.perf_counter()
+                    - compile_start
+                )
+
+    variables, dvariables_dF = torch_invariant_values_and_derivatives(
+        F_batch,
+        variable_names,
+        precision=precision_key,
+    )
+    return evaluator(variables, dvariables_dF)
 
 
 def evaluate_genes_with_shared_invariants(
@@ -311,31 +387,15 @@ def evaluate_genes_with_shared_invariants(
             torch.zeros((F_batch.shape[0], 0, 4), dtype=dtype, device=device),
         )
 
-    gene_backend = gene_backend or TorchGeneEvaluationBackend()
-    precision_key = gene_backend.cache_precision(precision)
-    gene_strings = tuple(str(individual[index]) for index in selected)
-    evaluator = None
-    if batch_cache is not None:
-        evaluator = batch_cache.get(gene_strings, variable_names, precision_key)
-
-    if evaluator is None:
-        compile_start = time.perf_counter()
-        evaluator = _make_joint_gene_evaluator(model, individual, selected, variable_names, gene_backend)
-        if batch_cache is not None:
-            batch_cache.put(gene_strings, variable_names, precision_key, evaluator)
-            if batch_cache.timing is not None:
-                batch_cache.timing[gene_backend.compile_timing_key] = (
-                    batch_cache.timing.get(gene_backend.compile_timing_key, 0.0)
-                    + time.perf_counter()
-                    - compile_start
-                )
-
-    variables, dvariables_dF = torch_invariant_values_and_derivatives(
+    return evaluate_gene_objects_with_shared_invariants(
+        batch_cache,
+        model,
+        [individual[index] for index in selected],
         F_batch,
         variable_names,
-        precision=precision_key,
+        precision=precision,
+        gene_backend=gene_backend,
     )
-    return evaluator(variables, dvariables_dF)
 
 
 class TorchGeneEvaluationBackend:
@@ -410,6 +470,75 @@ class TorchWeakFormCase:
     num_nodes: int
 
 
+@dataclass
+class TorchStressFeatures:
+    """Stress feature columns and valid mask kept on CUDA until needed."""
+
+    features_device: object
+    valid_mask: np.ndarray
+    valid_indices: np.ndarray
+    failed: bool = False
+    _features_numpy: np.ndarray | None = field(default=None, init=False, repr=False)
+
+    def features_numpy(self) -> np.ndarray:
+        if self._features_numpy is None:
+            self._features_numpy = _device_to_numpy(self.features_device)
+        return self._features_numpy
+
+    def prediction_numpy(self, theta: np.ndarray) -> np.ndarray:
+        torch = require_torch_backend()
+        theta_device = torch.as_tensor(theta, dtype=self.features_device.dtype, device=self.features_device.device)
+        return _device_to_numpy(self.features_device.matmul(theta_device))
+
+    @classmethod
+    def failed_item(cls, num_rows: int, num_columns: int, dtype, device):
+        torch = require_torch_backend()
+        return cls(
+            features_device=torch.zeros((num_rows, num_columns), dtype=dtype, device=device),
+            valid_mask=np.zeros(num_columns, dtype=bool),
+            valid_indices=np.zeros(0, dtype=int),
+            failed=True,
+        )
+
+
+@dataclass
+class TorchWeakFormArtifacts:
+    """Weak-form matrices kept on CUDA with lazy NumPy materialization for LP."""
+
+    lhs_device: object
+    rhs_device: object
+    residual_matrix_device: object
+    residual_target_device: object
+    _numpy_values: tuple[np.ndarray, np.ndarray, tuple[np.ndarray, np.ndarray]] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+
+    def block_until_ready(self):
+        block_until_ready(
+            (
+                self.lhs_device,
+                self.rhs_device,
+                self.residual_matrix_device,
+                self.residual_target_device,
+            )
+        )
+        return self
+
+    def to_numpy(self) -> tuple[np.ndarray, np.ndarray, tuple[np.ndarray, np.ndarray]]:
+        if self._numpy_values is None:
+            self._numpy_values = (
+                _device_to_numpy(self.lhs_device),
+                _device_to_numpy(self.rhs_device),
+                (
+                    _device_to_numpy(self.residual_matrix_device),
+                    _device_to_numpy(self.residual_target_device),
+                ),
+            )
+        return self._numpy_values
+
+
 class TorchWeakFormEvaluationCache(WeakFormEvaluationCache):
     """Bounded LRU caches for repeated Torch weak-form individuals."""
 
@@ -453,6 +582,224 @@ def prepare_torch_case(cache, precision: str = "float64") -> TorchWeakFormCase:
         reaction_forces=torch.as_tensor([force for _, force in cache.reactions], dtype=dtype, device=device),
         num_nodes=int(data.numNodes),
     )
+
+
+def population_feature_values_and_dqdf_device(
+    model,
+    individuals: Sequence,
+    F,
+    variable_names: Sequence[str],
+    gene_indices_by_individual: Sequence[Sequence[int]] | None = None,
+    value_limit: float = 1e8,
+    precision: str = "float64",
+    gene_cache=None,
+    gene_backend: TorchGeneEvaluationBackend | None = None,
+    timing: dict[str, float] | None = None,
+    chunk_size: int = TORCH_POPULATION_GENE_CHUNK_SIZE,
+) -> list[tuple]:
+    """Evaluate unique genes from many individuals in CUDA-sized chunks."""
+    torch = require_torch_backend()
+    dtype = _torch_dtype(torch, precision)
+    device = torch.device("cuda")
+    F = _as_cuda_tensor(torch, F, dtype, device)
+    gene_backend = gene_backend or TorchGeneEvaluationBackend()
+    selected_by_individual = _selected_gene_indices(individuals, gene_indices_by_individual)
+    unique_genes, individual_columns = _collect_unique_gene_columns(individuals, selected_by_individual)
+
+    if not unique_genes:
+        return [
+            (
+                torch.zeros((F.shape[0], 0), dtype=dtype, device=device),
+                torch.zeros((F.shape[0], 0, 4), dtype=dtype, device=device),
+            )
+            for _ in individuals
+        ]
+
+    start = time.perf_counter()
+    feature_chunks = []
+    dqdf_chunks = []
+    offset = 0
+    active_chunk_size = max(1, int(chunk_size))
+    while offset < len(unique_genes):
+        chunk = unique_genes[offset: offset + active_chunk_size]
+        try:
+            features, dqdf = evaluate_gene_objects_with_shared_invariants(
+                gene_cache,
+                model,
+                chunk,
+                F,
+                variable_names,
+                precision=precision,
+                gene_backend=gene_backend,
+            )
+            block_until_ready((features, dqdf))
+        except RuntimeError as exc:
+            if not _is_torch_oom_error(torch, exc) or active_chunk_size <= 1:
+                raise
+            _recover_after_torch_oom(torch)
+            active_chunk_size = max(1, active_chunk_size // 2)
+            if timing is not None:
+                timing["torch_population_gene_oom_retries"] = timing.get("torch_population_gene_oom_retries", 0.0) + 1.0
+            continue
+        feature_chunks.append(features)
+        dqdf_chunks.append(dqdf)
+        offset += len(chunk)
+    unique_features = torch.cat(tuple(feature_chunks), dim=1)
+    unique_dqdf = torch.cat(tuple(dqdf_chunks), dim=1)
+    block_until_ready((unique_features, unique_dqdf))
+    if timing is not None:
+        elapsed = time.perf_counter() - start
+        timing["torch_population_gene_seconds"] = timing.get("torch_population_gene_seconds", 0.0) + elapsed
+        timing["torch_gene_execute_seconds"] = timing.get("torch_gene_execute_seconds", 0.0) + elapsed
+
+    results = []
+    for columns in individual_columns:
+        if not columns:
+            results.append(
+                (
+                    torch.zeros((F.shape[0], 0), dtype=dtype, device=device),
+                    torch.zeros((F.shape[0], 0, 4), dtype=dtype, device=device),
+                )
+            )
+            continue
+        column_index = torch.as_tensor(columns, dtype=torch.long, device=device)
+        features = unique_features.index_select(1, column_index)
+        dqdf = unique_dqdf.index_select(1, column_index)
+        results.append((features, dqdf))
+    return results
+
+
+def build_population_stress_features(
+    model,
+    individuals: Sequence,
+    dataset,
+    variable_names: Sequence[str],
+    value_limit: float = 1e8,
+    duplicate_correlation: float = 0.999999,
+    precision: str = "float64",
+    timing: dict[str, float] | None = None,
+    gene_cache=None,
+    gene_backend: TorchGeneEvaluationBackend | None = None,
+) -> list[TorchStressFeatures]:
+    """Build stress feature matrices for many individuals with CUDA filtering."""
+    gene_batches = population_feature_values_and_dqdf_device(
+        model,
+        individuals,
+        dataset.F,
+        variable_names,
+        value_limit=value_limit,
+        precision=precision,
+        gene_cache=gene_cache,
+        gene_backend=gene_backend,
+        timing=timing,
+    )
+    stress_items = []
+    for individual, (features, dqdf) in zip(individuals, gene_batches):
+        num_columns = len(individual) + int(model.config.fit_intercept)
+        if not _feature_batch_is_valid(features, dqdf, value_limit):
+            dtype = dqdf.dtype
+            device = dqdf.device
+            stress_items.append(TorchStressFeatures.failed_item(dataset.target_vector.size, num_columns, dtype, device))
+            continue
+        filter_start = time.perf_counter()
+        columns = stress_columns_from_dqdf(dqdf)
+        filtered_columns, gene_valid_device = filter_stress_columns_device(
+            columns,
+            value_limit=value_limit,
+            duplicate_correlation=duplicate_correlation,
+        )
+        features_device, valid_device = append_intercept_column_device(
+            filtered_columns,
+            gene_valid_device,
+            fit_intercept=model.config.fit_intercept,
+        )
+        block_until_ready((features_device, valid_device))
+        if timing is not None:
+            timing["torch_gpu_filter_seconds"] = timing.get("torch_gpu_filter_seconds", 0.0) + time.perf_counter() - filter_start
+        valid_mask = valid_device.detach().cpu().numpy().astype(bool, copy=False)
+        stress_items.append(
+            TorchStressFeatures(
+                features_device=features_device,
+                valid_mask=valid_mask,
+                valid_indices=np.flatnonzero(valid_mask[: len(individual)]),
+            )
+        )
+    return stress_items
+
+
+def stress_columns_from_dqdf(dqdf):
+    """Return columns shaped like the CPU stress builder: ``[point*4, gene]``."""
+    return dqdf.permute(0, 2, 1).reshape(dqdf.shape[0] * dqdf.shape[2], dqdf.shape[1])
+
+
+def filter_stress_columns_device(columns, value_limit: float = 1e8, duplicate_correlation: float = 0.999999):
+    """Filter stress columns on CUDA while preserving first-column-wins order."""
+    torch = require_torch_backend()
+    if columns.shape[1] == 0:
+        return columns, torch.zeros((0,), dtype=torch.bool, device=columns.device)
+
+    filtered = torch.zeros_like(columns)
+    valid = torch.zeros((columns.shape[1],), dtype=torch.bool, device=columns.device)
+    normalized_columns = []
+    for gene_index in range(columns.shape[1]):
+        column = columns[:, gene_index]
+        finite = torch.all(torch.isfinite(column))
+        bounded = torch.max(torch.abs(column)) <= value_limit
+        norm = torch.linalg.vector_norm(column)
+        if not bool((finite & bounded & (norm >= 1e-12)).detach().cpu().item()):
+            continue
+        normalized = column / norm
+        if normalized_columns:
+            correlations = torch.stack(tuple(torch.abs(torch.dot(normalized, existing)) for existing in normalized_columns))
+            if bool(torch.any(correlations >= duplicate_correlation).detach().cpu().item()):
+                continue
+        normalized_columns.append(normalized)
+        filtered[:, gene_index] = column
+        valid[gene_index] = True
+    return filtered, valid
+
+
+def append_intercept_column_device(features, valid, fit_intercept: bool):
+    if not fit_intercept:
+        return features, valid
+    torch = require_torch_backend()
+    intercept_column = torch.zeros((features.shape[0], 1), dtype=features.dtype, device=features.device)
+    intercept_valid = torch.zeros((1,), dtype=torch.bool, device=features.device)
+    return torch.cat((features, intercept_column), dim=1), torch.cat((valid, intercept_valid), dim=0)
+
+
+def _feature_batch_is_valid(features, dqdf, value_limit: float) -> bool:
+    torch = require_torch_backend()
+    if features.shape[1] == 0:
+        return True
+    finite = torch.all(torch.isfinite(features)) & torch.all(torch.isfinite(dqdf))
+    bounded = (torch.max(torch.abs(features)) <= value_limit) & (torch.max(torch.abs(dqdf)) <= value_limit)
+    return bool((finite & bounded).detach().cpu().item())
+
+
+def _selected_gene_indices(individuals: Sequence, selected_by_individual: Sequence[Sequence[int]] | None) -> list[list[int]]:
+    if selected_by_individual is None:
+        return [list(range(len(individual))) for individual in individuals]
+    if len(selected_by_individual) != len(individuals):
+        raise ValueError("selected_by_individual must match the number of individuals.")
+    return [[int(index) for index in selected] for selected in selected_by_individual]
+
+
+def _collect_unique_gene_columns(individuals: Sequence, selected_by_individual: Sequence[Sequence[int]]):
+    unique_by_string = OrderedDict()
+    unique_indices = {}
+    columns_by_individual = []
+    for individual, selected in zip(individuals, selected_by_individual):
+        columns = []
+        for gene_index in selected:
+            gene = individual[int(gene_index)]
+            key = str(gene)
+            if key not in unique_by_string:
+                unique_indices[key] = len(unique_by_string)
+                unique_by_string[key] = gene
+            columns.append(unique_indices[key])
+        columns_by_individual.append(columns)
+    return list(unique_by_string.values()), columns_by_individual
 
 
 def feature_values_and_dqdf_device(
@@ -586,28 +933,26 @@ def stress_feature_builder(
             key = cache.timing_key("gene_derivative_seconds") if cache is not None else "torch_gene_derivative_seconds"
             timing[key] = timing.get(key, 0.0) + time.perf_counter() - start
         start = time.perf_counter()
-        dqdf = dqdf_device.detach().cpu().numpy().astype(float, copy=False)
+        columns = stress_columns_from_dqdf(dqdf_device)
+        filtered_device, valid_device = filter_stress_columns_device(
+            columns,
+            value_limit=value_limit,
+            duplicate_correlation=duplicate_correlation,
+        )
+        features_device, valid_device = append_intercept_column_device(
+            filtered_device,
+            valid_device,
+            fit_intercept=model.config.fit_intercept,
+        )
+        block_until_ready((features_device, valid_device))
+        if timing is not None:
+            timing["torch_gpu_filter_seconds"] = timing.get("torch_gpu_filter_seconds", 0.0) + time.perf_counter() - start
+        start = time.perf_counter()
+        features = features_device.detach().cpu().numpy().astype(float, copy=False)
+        valid = valid_device.detach().cpu().numpy().astype(bool, copy=False)
         if timing is not None:
             key = cache.timing_key("transfer_seconds") if cache is not None else "torch_transfer_seconds"
             timing[key] = timing.get(key, 0.0) + time.perf_counter() - start
-        features = np.zeros((dataset.target_vector.size, len(individual)), dtype=float)
-        valid = np.zeros(len(individual), dtype=bool)
-        normalized_columns = []
-        for gene_index in range(len(individual)):
-            column = dqdf[:, gene_index, :].reshape(-1)
-            norm = np.linalg.norm(column)
-            if not _valid(column, value_limit) or norm < 1e-12:
-                continue
-            normalized = column / norm
-            duplicate = any(abs(float(np.dot(normalized, existing))) >= duplicate_correlation for existing in normalized_columns)
-            if duplicate:
-                continue
-            normalized_columns.append(normalized)
-            features[:, gene_index] = column
-            valid[gene_index] = True
-        if model.config.fit_intercept:
-            features = np.column_stack([features, np.zeros(dataset.target_vector.size, dtype=float)])
-            valid = np.concatenate([valid, np.array([False], dtype=bool)])
         return features, valid
 
     return build
@@ -658,6 +1003,18 @@ def compute_residual_operator_device(case: TorchWeakFormCase, weak_lhs, balance:
     return torch.cat(rows, dim=0), torch.cat(targets, dim=0)
 
 
+def build_weak_form_artifacts_device(case: TorchWeakFormCase, dqdf, balance: float) -> TorchWeakFormArtifacts:
+    weak_lhs = compute_weak_lhs_device(case, dqdf)
+    lhs, rhs = compute_reaction_balance_device(case, weak_lhs, balance)
+    residual_matrix, residual_target = compute_residual_operator_device(case, weak_lhs, balance)
+    return TorchWeakFormArtifacts(
+        lhs_device=lhs,
+        rhs_device=rhs,
+        residual_matrix_device=residual_matrix,
+        residual_target_device=residual_target,
+    ).block_until_ready()
+
+
 def _valid(values, limit: float) -> bool:
     values = np.asarray(values, dtype=float)
     return bool(values.size and np.all(np.isfinite(values)) and np.max(np.abs(values)) <= limit)
@@ -691,6 +1048,9 @@ class TorchWeakFormBackend:
     def configure(self) -> None:
         torch = configure_torch_precision(self.precision)
         self.device = torch.device("cuda")
+        if self.timing is not None:
+            for key in TORCH_BATCH_TIMING_KEYS:
+                self.timing.setdefault(key, 0.0)
         self.eval_cache = TorchWeakFormEvaluationCache(
             device_name=str(self.device),
             enabled=self.cache_enabled,
@@ -752,6 +1112,55 @@ class TorchWeakFormBackend:
             gene_backend=self.gene_backend,
         )
 
+    def population_stress_features(
+        self,
+        model,
+        individuals: Sequence,
+        dataset,
+        variable_names: Sequence[str],
+        value_limit: float = 1e8,
+        duplicate_correlation: float = 0.999999,
+    ) -> list[TorchStressFeatures]:
+        self._ensure_configured()
+        return build_population_stress_features(
+            model,
+            individuals,
+            dataset,
+            variable_names,
+            value_limit=value_limit,
+            duplicate_correlation=duplicate_correlation,
+            precision=self.precision,
+            timing=self.timing,
+            gene_cache=self.gene_cache,
+            gene_backend=self.gene_backend,
+        )
+
+    def population_feature_values_and_dqdf_device(
+        self,
+        model,
+        individuals: Sequence,
+        F,
+        variable_names: Sequence[str],
+        gene_indices_by_individual: Sequence[Sequence[int]],
+        value_limit: float = 1e8,
+    ) -> list[tuple]:
+        self._ensure_configured()
+        return population_feature_values_and_dqdf_device(
+            model,
+            individuals,
+            F,
+            variable_names,
+            gene_indices_by_individual=gene_indices_by_individual,
+            value_limit=value_limit,
+            precision=self.precision,
+            gene_cache=self.gene_cache,
+            gene_backend=self.gene_backend,
+            timing=self.timing,
+        )
+
+    def feature_batch_is_valid(self, features, dqdf, value_limit: float = 1e8) -> bool:
+        return _feature_batch_is_valid(features, dqdf, value_limit)
+
     def compute_weak_lhs_device(self, case: TorchWeakFormCase, dqdf):
         return compute_weak_lhs_device(case, dqdf)
 
@@ -760,6 +1169,9 @@ class TorchWeakFormBackend:
 
     def compute_residual_operator_device(self, case: TorchWeakFormCase, weak_lhs, balance: float):
         return compute_residual_operator_device(case, weak_lhs, balance)
+
+    def build_weak_form_artifacts_device(self, case: TorchWeakFormCase, dqdf, balance: float) -> TorchWeakFormArtifacts:
+        return build_weak_form_artifacts_device(case, dqdf, balance)
 
     def block_until_ready(self, value):
         return block_until_ready(value)
