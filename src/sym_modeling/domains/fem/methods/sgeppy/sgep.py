@@ -5,7 +5,7 @@ import operator
 import time
 from dataclasses import dataclass
 from itertools import count
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import geppy as gep
 import numpy as np
@@ -65,6 +65,15 @@ SYMBOLIC_FUNCTIONS = {
 }
 
 
+@dataclass
+class BatchEvaluationResult:
+    """Result returned by a backend batch evaluator for one individual."""
+
+    fit: Any | None
+    valid_mask: np.ndarray
+    fitness_values: tuple[float, ...] | None = None
+
+
 def _timed_gep_simple(
     population,
     toolbox,
@@ -94,7 +103,10 @@ def _timed_gep_simple(
         invalid_individuals = [ind for ind in population if not ind.fitness.valid]
         eval_wall_start = time.perf_counter()
         eval_cpu_start = time.process_time()
-        fitnesses = toolbox.map(toolbox.evaluate, invalid_individuals)
+        if hasattr(toolbox, "evaluate_batch"):
+            fitnesses = toolbox.evaluate_batch(invalid_individuals)
+        else:
+            fitnesses = toolbox.map(toolbox.evaluate, invalid_individuals)
         for ind, fit in zip(invalid_individuals, fitnesses):
             ind.fitness.values = fit
         evaluation_wall_seconds = time.perf_counter() - eval_wall_start
@@ -237,6 +249,7 @@ class SGEP:
         self._y = None
         self._feature_builder = None
         self._evaluator = None
+        self._batch_evaluator = None
 
     def build(self) -> "SGEP":
         random.seed(self.config.random_seed)
@@ -271,6 +284,7 @@ class SGEP:
         self.toolbox.register("population", tools.initRepeat, list, self.toolbox.individual)
         self.toolbox.register("compile", gep.compile_, pset=self.pset)
         self.toolbox.register("evaluate", self.evaluate)
+        self.toolbox.register("evaluate_batch", self.evaluate_batch)
         self.toolbox.register("select", tools.selTournament, tournsize=self.config.tournament_size)
         self.toolbox.early_stop_value = self.config.early_stop_value
 
@@ -290,6 +304,7 @@ class SGEP:
         y: Sequence[float],
         feature_builder=None,
         evaluator=None,
+        batch_evaluator=None,
         generation_callback=None,
     ) -> "SGEP":
         if self.toolbox is None:
@@ -298,6 +313,7 @@ class SGEP:
         self._y = np.asarray(y, dtype=float).reshape(-1)
         self._feature_builder = feature_builder
         self._evaluator = evaluator
+        self._batch_evaluator = batch_evaluator
         if feature_builder is None and evaluator is None and self._X.shape[0] != self._y.size:
             raise ValueError("X and y must contain the same number of samples.")
 
@@ -338,18 +354,50 @@ class SGEP:
                     refit=self.config.regression_refit,
                     max_iter=self.config.regression_max_iter,
                 )
-            individual.theta = fit.theta
-            individual.valid_mask = valid
-            individual.sparse_fit = fit
-            return self._fitness_values(fit)
+            return self._assign_evaluation_result(individual, BatchEvaluationResult(fit=fit, valid_mask=valid))
         except (ArithmeticError, FloatingPointError, ValueError, np.linalg.LinAlgError):
+            return self._assign_evaluation_result(individual, self.failed_evaluation_result())
+
+    def evaluate_batch(self, individuals) -> list[tuple[float, ...]]:
+        individuals = list(individuals)
+        if not individuals:
+            return []
+        if self._batch_evaluator is None:
+            return [self.evaluate(individual) for individual in individuals]
+        try:
+            results = list(self._batch_evaluator(self, individuals, self._X, self._y))
+        except (ArithmeticError, FloatingPointError, ValueError, np.linalg.LinAlgError):
+            results = [self.failed_evaluation_result() for _ in individuals]
+        if len(results) != len(individuals):
+            raise ValueError("Batch evaluator returned %d results for %d individuals." % (len(results), len(individuals)))
+        return [
+            self._assign_evaluation_result(individual, result)
+            for individual, result in zip(individuals, results)
+        ]
+
+    def failed_evaluation_result(self) -> BatchEvaluationResult:
+        n_features = self.config.n_genes + int(self.config.fit_intercept)
+        fitness = (float("inf"), float("inf")) if self.config.epsilons is not None else tuple(
+            float("inf") for _ in self.config.fitness_metrics
+        )
+        return BatchEvaluationResult(
+            fit=None,
+            valid_mask=np.zeros(n_features, dtype=bool),
+            fitness_values=fitness,
+        )
+
+    def _assign_evaluation_result(self, individual, result: BatchEvaluationResult) -> tuple[float, ...]:
+        valid = np.asarray(result.valid_mask, dtype=bool)
+        if result.fit is None:
             n_features = self.config.n_genes + int(self.config.fit_intercept)
             individual.theta = np.zeros(n_features, dtype=float)
-            individual.valid_mask = np.zeros(n_features, dtype=bool)
+            individual.valid_mask = valid
             individual.sparse_fit = None
-            if self.config.epsilons is not None:
-                return (float("inf"), float("inf"))
-            return tuple(float("inf") for _ in self.config.fitness_metrics)
+            return result.fitness_values or self.failed_evaluation_result().fitness_values
+        individual.theta = result.fit.theta
+        individual.valid_mask = valid
+        individual.sparse_fit = result.fit
+        return result.fitness_values or self._fitness_values(result.fit)
 
     def _fitness_values(self, fit) -> tuple[float, ...]:
         values = tuple(self._metric_value(fit, metric) for metric in self.config.fitness_metrics)
