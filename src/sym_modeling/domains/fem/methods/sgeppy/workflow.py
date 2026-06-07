@@ -11,7 +11,7 @@ from typing import Sequence
 import geppy as gep
 import numpy as np
 
-from .sgep import SGEP, SGEPConfig
+from .sgep import BatchEvaluationResult, SGEP, SGEPConfig
 from sym_modeling.domains.fem.data import FeatureSet
 from sym_modeling.domains.fem.io.csv_loader import loadFemData
 from sym_modeling.domains.fem.methods.common.lp_solver import apply_penalty_lp_iteration
@@ -109,6 +109,18 @@ class _WeakFormDataCache:
     B_matrices: np.ndarray
 
 
+@dataclass
+class _WeakFitCandidate:
+    result_index: int
+    individual: object
+    stress: object
+    valid_indices: np.ndarray
+    lhs: np.ndarray
+    rhs: np.ndarray
+    residual_operators: list[tuple[np.ndarray, np.ndarray]]
+    failed: bool = False
+
+
 class SGEPWorkflow:
     def __init__(self, config: SGEPWorkflowConfig | None = None):
         self.config = config or SGEPWorkflowConfig()
@@ -139,6 +151,7 @@ class SGEPWorkflow:
             duplicate_correlation=self.config.duplicate_correlation,
         )
         evaluator = self._backend_evaluator(builder)
+        batch_evaluator = self._backend_batch_evaluator(evaluator)
         self.model = SGEP(self.config.model)
         self._generation_output_paths = {}
         generation_callback = self._initialize_generation_log(self.model) if self.config.generation_log else None
@@ -147,6 +160,7 @@ class SGEPWorkflow:
             self.dataset.target_vector,
             feature_builder=builder,
             evaluator=evaluator,
+            batch_evaluator=batch_evaluator,
             generation_callback=generation_callback,
         )
         fit = self.model.best_fit
@@ -265,7 +279,7 @@ class SGEPWorkflow:
                 )
                 cached_artifact = eval_cache.get_artifact(artifact_key)
                 if cached_artifact is not None:
-                    step_lhs, step_rhs, residual_operator = cached_artifact
+                    step_lhs, step_rhs, residual_operator = self._materialize_backend_artifact(cached_artifact, backend)
                     lhs += step_lhs
                     rhs += step_rhs
                     residual_operators.append(residual_operator)
@@ -292,34 +306,28 @@ class SGEPWorkflow:
                 self._backend_timing[backend.timing_key("gene_derivative_seconds")] += time.perf_counter() - start
 
                 start = time.perf_counter()
-                weak_lhs = backend.compute_weak_lhs_device(backend_case, dqdf)
-                step_lhs_device, step_rhs_device = backend.compute_reaction_balance_device(backend_case, weak_lhs, balance)
-                residual_matrix_device, residual_target_device = backend.compute_residual_operator_device(
-                    backend_case,
-                    weak_lhs,
-                    balance,
-                )
-                backend.block_until_ready((step_lhs_device, step_rhs_device, residual_matrix_device, residual_target_device))
+                if hasattr(backend, "build_weak_form_artifacts_device"):
+                    artifact = backend.build_weak_form_artifacts_device(backend_case, dqdf, balance)
+                    backend.block_until_ready(artifact)
+                else:
+                    weak_lhs = backend.compute_weak_lhs_device(backend_case, dqdf)
+                    step_lhs_device, step_rhs_device = backend.compute_reaction_balance_device(backend_case, weak_lhs, balance)
+                    residual_matrix_device, residual_target_device = backend.compute_residual_operator_device(
+                        backend_case,
+                        weak_lhs,
+                        balance,
+                    )
+                    backend.block_until_ready((step_lhs_device, step_rhs_device, residual_matrix_device, residual_target_device))
+                    artifact = (
+                        step_lhs_device,
+                        step_rhs_device,
+                        (residual_matrix_device, residual_target_device),
+                    )
                 self._backend_timing[backend.timing_key("weak_lhs_seconds")] += time.perf_counter() - start
 
-                start = time.perf_counter()
-                step_lhs = _device_to_numpy(step_lhs_device)
-                step_rhs = _device_to_numpy(step_rhs_device)
-                residual_operators.append(
-                    (
-                        _device_to_numpy(residual_matrix_device),
-                        _device_to_numpy(residual_target_device),
-                    )
-                )
-                eval_cache.put_artifact(
-                    artifact_key,
-                    (
-                        step_lhs,
-                        step_rhs,
-                        residual_operators[-1],
-                    ),
-                )
-                self._backend_timing[backend.timing_key("transfer_seconds")] += time.perf_counter() - start
+                step_lhs, step_rhs, residual_operator = self._materialize_backend_artifact(artifact, backend)
+                residual_operators.append(residual_operator)
+                eval_cache.put_artifact(artifact_key, artifact)
                 lhs += step_lhs
                 rhs += step_rhs
 
@@ -366,6 +374,266 @@ class SGEPWorkflow:
             )
 
         return evaluate
+
+    def _backend_batch_evaluator(self, single_evaluator):
+        if self._backend is None or self.dataset is None:
+            return None
+        if not hasattr(self._backend, "population_stress_features"):
+            return None
+
+        if self.weak_form_cache is None and self.fem_datasets is not None:
+            self.weak_form_cache = self._build_weak_form_cache()
+        weak_caches = self.weak_form_cache or []
+        fem_datasets = [cache.data for cache in weak_caches]
+        backend = self._backend
+        backend_cases = [backend.prepare_case(cache) for cache in weak_caches]
+        variable_names = self.config.model.variable_names
+
+        def evaluate_batch(model: SGEP, individuals, X: np.ndarray, y: np.ndarray):
+            individuals = list(individuals)
+            if not individuals:
+                return []
+            try:
+                return self._evaluate_torch_population_batch(
+                    model,
+                    individuals,
+                    y,
+                    backend,
+                    backend_cases,
+                    fem_datasets,
+                    variable_names,
+                )
+            except (ArithmeticError, FloatingPointError, ValueError, np.linalg.LinAlgError):
+                return [
+                    self._single_evaluation_result(single_evaluator, model, individual, X, y)
+                    for individual in individuals
+                ]
+
+        return evaluate_batch
+
+    def _evaluate_torch_population_batch(
+        self,
+        model: SGEP,
+        individuals: Sequence,
+        y: np.ndarray,
+        backend,
+        backend_cases: Sequence,
+        fem_datasets: Sequence,
+        variable_names: Sequence[str],
+    ) -> list[BatchEvaluationResult]:
+        batch_start = time.perf_counter()
+        results: list[BatchEvaluationResult | None] = [None] * len(individuals)
+        weak_config = self._weak_form_config()
+        balance = float(getattr(weak_config, "balance", 100.0))
+
+        start = time.perf_counter()
+        stress_items = backend.population_stress_features(
+            model,
+            individuals,
+            self.dataset,
+            variable_names,
+            value_limit=self.config.invalid_value_limit,
+            duplicate_correlation=self.config.duplicate_correlation,
+        )
+        backend.block_until_ready([item.features_device for item in stress_items])
+        self._backend_timing[backend.timing_key("gene_derivative_seconds")] += time.perf_counter() - start
+
+        candidates: list[_WeakFitCandidate] = []
+        for result_index, (individual, stress) in enumerate(zip(individuals, stress_items)):
+            if stress.failed or stress.valid_indices.size == 0:
+                results[result_index] = model.failed_evaluation_result()
+                continue
+            n_valid = int(stress.valid_indices.size)
+            candidates.append(
+                _WeakFitCandidate(
+                    result_index=result_index,
+                    individual=individual,
+                    stress=stress,
+                    valid_indices=stress.valid_indices,
+                    lhs=np.zeros((n_valid, n_valid), dtype=float),
+                    rhs=np.zeros(n_valid, dtype=float),
+                    residual_operators=[],
+                )
+            )
+
+        for case_index, backend_case in enumerate(backend_cases):
+            missing_candidates = []
+            missing_keys = []
+            for candidate in candidates:
+                if candidate.failed:
+                    continue
+                artifact_key = self._weak_artifact_key(
+                    backend,
+                    backend_case,
+                    case_index,
+                    model,
+                    candidate.individual,
+                    candidate.valid_indices,
+                    variable_names,
+                    balance,
+                )
+                cached_artifact = backend.eval_cache.get_artifact(artifact_key)
+                if cached_artifact is None:
+                    missing_candidates.append(candidate)
+                    missing_keys.append(artifact_key)
+                    continue
+                step_lhs, step_rhs, residual_operator = self._materialize_backend_artifact(cached_artifact, backend)
+                candidate.lhs += step_lhs
+                candidate.rhs += step_rhs
+                candidate.residual_operators.append(residual_operator)
+
+            if not missing_candidates:
+                continue
+
+            start = time.perf_counter()
+            weak_batches = backend.population_feature_values_and_dqdf_device(
+                model,
+                [candidate.individual for candidate in missing_candidates],
+                backend_case.F,
+                variable_names,
+                gene_indices_by_individual=[candidate.valid_indices for candidate in missing_candidates],
+                value_limit=self.config.invalid_value_limit,
+            )
+            backend.block_until_ready([dqdf for _, dqdf in weak_batches])
+            self._backend_timing[backend.timing_key("gene_derivative_seconds")] += time.perf_counter() - start
+
+            for candidate, artifact_key, (features, dqdf) in zip(missing_candidates, missing_keys, weak_batches):
+                if not backend.feature_batch_is_valid(features, dqdf, self.config.invalid_value_limit):
+                    candidate.failed = True
+                    continue
+                try:
+                    start = time.perf_counter()
+                    artifact = backend.build_weak_form_artifacts_device(backend_case, dqdf, balance)
+                    self._backend_timing[backend.timing_key("weak_lhs_seconds")] += time.perf_counter() - start
+                    backend.eval_cache.put_artifact(artifact_key, artifact)
+                    step_lhs, step_rhs, residual_operator = self._materialize_backend_artifact(artifact, backend)
+                except (ArithmeticError, FloatingPointError, ValueError, np.linalg.LinAlgError):
+                    candidate.failed = True
+                    continue
+                candidate.lhs += step_lhs
+                candidate.rhs += step_rhs
+                candidate.residual_operators.append(residual_operator)
+
+        for candidate in candidates:
+            if candidate.failed or not candidate.residual_operators:
+                results[candidate.result_index] = model.failed_evaluation_result()
+                continue
+            results[candidate.result_index] = self._fit_weak_candidate(
+                model,
+                candidate,
+                fem_datasets,
+                weak_config,
+                y,
+            )
+
+        self._backend_timing[backend.timing_key("evaluation_seconds")] += time.perf_counter() - batch_start
+        self._backend_timing[backend.timing_key("evaluations")] += float(len(individuals))
+        return [result if result is not None else model.failed_evaluation_result() for result in results]
+
+    def _fit_weak_candidate(
+        self,
+        model: SGEP,
+        candidate: _WeakFitCandidate,
+        fem_datasets: Sequence,
+        weak_config,
+        y: np.ndarray,
+    ) -> BatchEvaluationResult:
+        def weak_cost(theta_candidate: np.ndarray) -> tuple[float, float, float]:
+            residual = _residual_vector_from_operators(candidate.residual_operators, theta_candidate)
+            weak_value = float(np.sum(np.square(residual)))
+            penalty = float(getattr(weak_config, "penaltyLp", 0.0)) * float(
+                np.sum(np.power(np.abs(theta_candidate), float(getattr(weak_config, "p", 1.0))))
+            )
+            return weak_value, penalty, weak_value + penalty
+
+        start = time.perf_counter()
+        theta_valid = apply_penalty_lp_iteration(
+            fem_datasets,
+            candidate.lhs,
+            candidate.rhs,
+            weak_config,
+            cost_fn=weak_cost,
+            verbose=False,
+        )
+        self._backend_timing["torch_lp_seconds"] += time.perf_counter() - start
+
+        theta = np.zeros(candidate.stress.features_device.shape[1], dtype=float)
+        theta[candidate.valid_indices] = theta_valid
+        active = np.abs(theta) >= self.config.weak_form.threshold
+        residual = _residual_vector_from_operators(candidate.residual_operators, theta_valid)
+        metrics = regression_metrics(
+            np.zeros_like(residual),
+            residual,
+            num_parameters=int(np.count_nonzero(active)),
+        )
+        prediction = candidate.stress.prediction_numpy(theta) if theta.size == candidate.stress.features_device.shape[1] else np.zeros_like(y)
+        fit = SparseFitResult(
+            theta=theta,
+            prediction=prediction,
+            active_mask=active,
+            metrics=metrics,
+            column_scales=np.ones_like(theta),
+        )
+        return BatchEvaluationResult(fit=fit, valid_mask=candidate.stress.valid_mask)
+
+    def _single_evaluation_result(self, evaluator, model: SGEP, individual, X: np.ndarray, y: np.ndarray) -> BatchEvaluationResult:
+        try:
+            fit, valid = evaluator(model, individual, X, y)
+            return BatchEvaluationResult(fit=fit, valid_mask=valid)
+        except (ArithmeticError, FloatingPointError, ValueError, np.linalg.LinAlgError):
+            return model.failed_evaluation_result()
+
+    def _weak_artifact_key(
+        self,
+        backend,
+        backend_case,
+        case_index: int,
+        model: SGEP,
+        individual,
+        valid_indices: np.ndarray,
+        variable_names: Sequence[str],
+        balance: float,
+    ):
+        case_key = (
+            "loadstep",
+            case_index,
+            id(backend_case.data),
+            tuple(getattr(backend_case.F, "shape", ())),
+            str(getattr(backend_case.F, "dtype", "")),
+            str(getattr(backend_case.F, "device", "")),
+        )
+        return backend.eval_cache.weak_artifact_key(
+            case_key,
+            model,
+            individual,
+            valid_indices,
+            variable_names,
+            self.config.precision,
+            balance,
+        )
+
+    def _materialize_backend_artifact(self, artifact, backend):
+        start = time.perf_counter()
+        if hasattr(artifact, "to_numpy"):
+            values = artifact.to_numpy()
+            elapsed = time.perf_counter() - start
+            self._backend_timing[backend.timing_key("transfer_seconds")] += elapsed
+            self._backend_timing[backend.timing_key("lazy_materialize_seconds")] = (
+                self._backend_timing.get(backend.timing_key("lazy_materialize_seconds"), 0.0) + elapsed
+            )
+            return values
+        step_lhs, step_rhs, residual_operator = artifact
+        residual_matrix, residual_target = residual_operator
+        values = (
+            _device_to_numpy(step_lhs),
+            _device_to_numpy(step_rhs),
+            (
+                _device_to_numpy(residual_matrix),
+                _device_to_numpy(residual_target),
+            ),
+        )
+        self._backend_timing[backend.timing_key("transfer_seconds")] += time.perf_counter() - start
+        return values
 
     def _jax_evaluator(self, stress_builder):
         return self._backend_evaluator(stress_builder)
