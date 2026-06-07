@@ -1,6 +1,12 @@
 from .config import EuclidConfig, FORWARD_MODEL_NAMES, normalize_euclid_model_name
 from .constraints import checkEnergyRequirementsRigorous
-from .feature_library import computeFeatureDerivatives, computeFeatures, getNumberOfFeatures
+from .feature_library import (
+    computeFeatureDerivatives,
+    computeFeatures,
+    formatFeatureExpression,
+    getFeatureExpressionTerms,
+    getNumberOfFeatures,
+)
 from .lp_solver import applyPenaltyLpIteration, saveResultsLp
 
 __all__ = [
@@ -11,6 +17,8 @@ __all__ = [
     "checkEnergyRequirementsRigorous",
     "computeFeatureDerivatives",
     "computeFeatures",
+    "formatFeatureExpression",
+    "getFeatureExpressionTerms",
     "getNumberOfFeatures",
     "normalize_euclid_model_name",
     "saveResultsLp",

@@ -5,7 +5,7 @@ import operator
 import time
 from dataclasses import dataclass
 from itertools import count
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import geppy as gep
 import numpy as np
@@ -17,13 +17,19 @@ from . import operator as ops
 from sym_modeling.domains.fem.methods.common.regression import fit_sparse_regression
 
 
-BINARY_OPS = {"add": ops.add, "sub": ops.sub, "mul": ops.mul, "div": ops.div}
+BINARY_OPS = {
+    "add": ops.add,
+    "sub": ops.sub,
+    "mul": ops.mul,
+    "protected_div": ops.protected_div,
+}
 UNARY_OPS = {
     "neg": ops.neg,
     "square": ops.square,
-    "sqrt": ops.sqrt,
-    "log": ops.log,
-    "exp": ops.exp,
+    "cube": ops.cube,
+    "protected_sqrt": ops.protected_sqrt,
+    "protected_log": ops.protected_log,
+    "protected_exp": ops.protected_exp,
     "sin": ops.sin,
     "cos": ops.cos,
 }
@@ -46,38 +52,74 @@ SYMBOLIC_FUNCTIONS = {
     "add": operator.add,
     "sub": operator.sub,
     "mul": operator.mul,
-    "div": operator.truediv,
+    "protected_div": sp.Function("protected_div"),
     "neg": operator.neg,
     "square": lambda x: x**2,
-    "sqrt": sp.sqrt,
-    "log": sp.log,
-    "exp": sp.exp,
+    "cube": lambda x: x**3,
+    "protected_sqrt": sp.Function("protected_sqrt"),
+    "protected_log": sp.Function("protected_log"),
+    "protected_exp": sp.Function("protected_exp"),
     "sin": sp.sin,
     "cos": sp.cos,
     "linked_add": linked_add,
 }
 
 
-def _timed_gep_simple(population, toolbox, n_generations=100, n_elites=1, stats=None, hall_of_fame=None, verbose=True):
+@dataclass
+class BatchEvaluationResult:
+    """Result returned by a backend batch evaluator for one individual."""
+
+    fit: Any | None
+    valid_mask: np.ndarray
+    fitness_values: tuple[float, ...] | None = None
+
+
+def _timed_gep_simple(
+    population,
+    toolbox,
+    n_generations=100,
+    n_elites=1,
+    stats=None,
+    hall_of_fame=None,
+    verbose=True,
+    generation_callback=None,
+):
     _validate_basic_toolbox(toolbox)
     logbook = tools.Logbook()
-    logbook.header = ["gen", "nevals", "wall_seconds", "cpu_seconds"] + (stats.fields if stats else [])
+    logbook.header = [
+        "gen",
+        "nevals",
+        "wall_seconds",
+        "cpu_seconds",
+        "evaluation_wall_seconds",
+        "evaluation_cpu_seconds",
+        "early_stop",
+    ] + (stats.fields if stats else [])
 
     for gen in range(n_generations + 1):
         wall_start = time.perf_counter()
         cpu_start = time.process_time()
 
         invalid_individuals = [ind for ind in population if not ind.fitness.valid]
-        fitnesses = toolbox.map(toolbox.evaluate, invalid_individuals)
+        eval_wall_start = time.perf_counter()
+        eval_cpu_start = time.process_time()
+        if hasattr(toolbox, "evaluate_batch"):
+            fitnesses = toolbox.evaluate_batch(invalid_individuals)
+        else:
+            fitnesses = toolbox.map(toolbox.evaluate, invalid_individuals)
         for ind, fit in zip(invalid_individuals, fitnesses):
             ind.fitness.values = fit
+        evaluation_wall_seconds = time.perf_counter() - eval_wall_start
+        evaluation_cpu_seconds = time.process_time() - eval_cpu_start
 
         if hall_of_fame is not None:
             hall_of_fame.update(population)
         record = stats.compile(population) if stats else {}
+        early_stop_value = getattr(toolbox, "early_stop_value", None)
+        early_stop = _meets_early_stop(population, hall_of_fame, early_stop_value)
 
         next_population = None
-        if gen < n_generations:
+        if gen < n_generations and not early_stop:
             elites = tools.selBest(population, k=n_elites)
             offspring = toolbox.select(population, len(population) - n_elites)
             offspring = [toolbox.clone(ind) for ind in offspring]
@@ -95,8 +137,14 @@ def _timed_gep_simple(population, toolbox, n_generations=100, n_elites=1, stats=
             nevals=len(invalid_individuals),
             wall_seconds=time.perf_counter() - wall_start,
             cpu_seconds=time.process_time() - cpu_start,
+            evaluation_wall_seconds=evaluation_wall_seconds,
+            evaluation_cpu_seconds=evaluation_cpu_seconds,
+            early_stop=early_stop,
             **record,
         )
+        if generation_callback is not None:
+            best_individual = hall_of_fame[0] if hall_of_fame is not None else tools.selBest(population, k=1)[0]
+            generation_callback(dict(logbook[-1]), best_individual)
         if verbose:
             print(logbook.stream)
         if next_population is None:
@@ -106,11 +154,23 @@ def _timed_gep_simple(population, toolbox, n_generations=100, n_elites=1, stats=
     return population, logbook
 
 
+def _meets_early_stop(population, hall_of_fame, early_stop_value: float | None) -> bool:
+    if early_stop_value is None:
+        return False
+    candidates = list(hall_of_fame) if hall_of_fame is not None else list(population)
+    values = [
+        float(ind.fitness.values[0])
+        for ind in candidates
+        if ind.fitness.valid and len(ind.fitness.values) > 0 and np.isfinite(ind.fitness.values[0])
+    ]
+    return bool(values and min(values) <= float(early_stop_value))
+
+
 @dataclass
 class SGEPConfig:
     variable_names: tuple[str, ...] = ("K1", "K2", "Jm1")
     unary_operators: tuple[str, ...] = ()
-    binary_operators: tuple[str, ...] = ("add", "sub", "mul", "div")
+    binary_operators: tuple[str, ...] = ("add", "sub", "mul", "protected_div")
     random_seed: int = 0
 
     head_length: int = 7
@@ -131,6 +191,7 @@ class SGEPConfig:
     cx_gene_pb: float = 0.1
     fitness_metrics: tuple[str, ...] = ("aicc",)
     epsilons: tuple[float | None, ...] | None = None
+    early_stop_value: float | None = None
     fit_intercept: bool = True
     verbose: bool = True
 
@@ -166,6 +227,8 @@ class SGEPConfig:
                 raise ValueError("epsilons must match fitness_metrics length.")
             if all(epsilon is not None for epsilon in self.epsilons):
                 raise ValueError("At least one epsilon must be None.")
+        if self.early_stop_value is not None:
+            self.early_stop_value = float(self.early_stop_value)
         if self.n_elites >= self.population_size:
             raise ValueError("n_elites must be smaller than population_size.")
 
@@ -186,6 +249,7 @@ class SGEP:
         self._y = None
         self._feature_builder = None
         self._evaluator = None
+        self._batch_evaluator = None
 
     def build(self) -> "SGEP":
         random.seed(self.config.random_seed)
@@ -220,7 +284,9 @@ class SGEP:
         self.toolbox.register("population", tools.initRepeat, list, self.toolbox.individual)
         self.toolbox.register("compile", gep.compile_, pset=self.pset)
         self.toolbox.register("evaluate", self.evaluate)
+        self.toolbox.register("evaluate_batch", self.evaluate_batch)
         self.toolbox.register("select", tools.selTournament, tournsize=self.config.tournament_size)
+        self.toolbox.early_stop_value = self.config.early_stop_value
 
         self.toolbox.register("mut_uniform", gep.mutate_uniform, pset=self.pset, ind_pb=self.config.mut_uniform_ind_pb, pb=self.config.mut_uniform_pb)
         self.toolbox.register("mut_invert", gep.invert, pb=self.config.mut_invert_pb)
@@ -232,13 +298,22 @@ class SGEP:
         self.toolbox.register("cx_gene", gep.crossover_gene, pb=self.config.cx_gene_pb)
         return self
 
-    def fit(self, X: np.ndarray | Mapping[str, Sequence[float]], y: Sequence[float], feature_builder=None, evaluator=None) -> "SGEP":
+    def fit(
+        self,
+        X: np.ndarray | Mapping[str, Sequence[float]],
+        y: Sequence[float],
+        feature_builder=None,
+        evaluator=None,
+        batch_evaluator=None,
+        generation_callback=None,
+    ) -> "SGEP":
         if self.toolbox is None:
             self.build()
         self._X = self._as_matrix(X)
         self._y = np.asarray(y, dtype=float).reshape(-1)
         self._feature_builder = feature_builder
         self._evaluator = evaluator
+        self._batch_evaluator = batch_evaluator
         if feature_builder is None and evaluator is None and self._X.shape[0] != self._y.size:
             raise ValueError("X and y must contain the same number of samples.")
 
@@ -258,6 +333,7 @@ class SGEP:
             stats=stats,
             hall_of_fame=self.hall_of_fame,
             verbose=self.config.verbose,
+            generation_callback=generation_callback,
         )
         self.best_individual = self.hall_of_fame[0]
         self.best_fit = self.best_individual.sparse_fit
@@ -278,18 +354,50 @@ class SGEP:
                     refit=self.config.regression_refit,
                     max_iter=self.config.regression_max_iter,
                 )
-            individual.theta = fit.theta
-            individual.valid_mask = valid
-            individual.sparse_fit = fit
-            return self._fitness_values(fit)
+            return self._assign_evaluation_result(individual, BatchEvaluationResult(fit=fit, valid_mask=valid))
         except (ArithmeticError, FloatingPointError, ValueError, np.linalg.LinAlgError):
+            return self._assign_evaluation_result(individual, self.failed_evaluation_result())
+
+    def evaluate_batch(self, individuals) -> list[tuple[float, ...]]:
+        individuals = list(individuals)
+        if not individuals:
+            return []
+        if self._batch_evaluator is None:
+            return [self.evaluate(individual) for individual in individuals]
+        try:
+            results = list(self._batch_evaluator(self, individuals, self._X, self._y))
+        except (ArithmeticError, FloatingPointError, ValueError, np.linalg.LinAlgError):
+            results = [self.failed_evaluation_result() for _ in individuals]
+        if len(results) != len(individuals):
+            raise ValueError("Batch evaluator returned %d results for %d individuals." % (len(results), len(individuals)))
+        return [
+            self._assign_evaluation_result(individual, result)
+            for individual, result in zip(individuals, results)
+        ]
+
+    def failed_evaluation_result(self) -> BatchEvaluationResult:
+        n_features = self.config.n_genes + int(self.config.fit_intercept)
+        fitness = (float("inf"), float("inf")) if self.config.epsilons is not None else tuple(
+            float("inf") for _ in self.config.fitness_metrics
+        )
+        return BatchEvaluationResult(
+            fit=None,
+            valid_mask=np.zeros(n_features, dtype=bool),
+            fitness_values=fitness,
+        )
+
+    def _assign_evaluation_result(self, individual, result: BatchEvaluationResult) -> tuple[float, ...]:
+        valid = np.asarray(result.valid_mask, dtype=bool)
+        if result.fit is None:
             n_features = self.config.n_genes + int(self.config.fit_intercept)
             individual.theta = np.zeros(n_features, dtype=float)
-            individual.valid_mask = np.zeros(n_features, dtype=bool)
+            individual.valid_mask = valid
             individual.sparse_fit = None
-            if self.config.epsilons is not None:
-                return (float("inf"), float("inf"))
-            return tuple(float("inf") for _ in self.config.fitness_metrics)
+            return result.fitness_values or self.failed_evaluation_result().fitness_values
+        individual.theta = result.fit.theta
+        individual.valid_mask = valid
+        individual.sparse_fit = result.fit
+        return result.fitness_values or self._fitness_values(result.fit)
 
     def _fitness_values(self, fit) -> tuple[float, ...]:
         values = tuple(self._metric_value(fit, metric) for metric in self.config.fitness_metrics)

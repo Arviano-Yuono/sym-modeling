@@ -21,6 +21,7 @@ from sym_modeling.domains.fem import (  # noqa: E402
     plot_forward_benchmark_loadsteps,
     run_forward_hyperelastic_benchmark,
 )
+from sym_modeling.domains.fem.forward_benchmark import _arruda_boyce_energy_density  # noqa: E402
 
 
 class ForwardBenchmarkApiTests(unittest.TestCase):
@@ -30,6 +31,7 @@ class ForwardBenchmarkApiTests(unittest.TestCase):
         self.assertEqual(plot_forward_benchmark_loadsteps.__name__, "plot_forward_benchmark_loadsteps")
         self.assertIn("NH2", SUPPORTED_FORWARD_BENCHMARK_MODELS)
         self.assertIn("GT", SUPPORTED_FORWARD_BENCHMARK_MODELS)
+        self.assertIn("AB", SUPPORTED_FORWARD_BENCHMARK_MODELS)
         self.assertEqual(BENCHMARK_CELL_TAG, 11)
 
     def test_boundary_tag_map_contains_all_boundaries(self):
@@ -39,10 +41,31 @@ class ForwardBenchmarkApiTests(unittest.TestCase):
     def test_default_load_steps_depend_on_material(self):
         nh2 = ForwardFEMBenchmarkConfig(material_model="NH2")
         hw = ForwardFEMBenchmarkConfig(material_model="HW")
+        ab = ForwardFEMBenchmarkConfig(material_model="AB")
         self.assertEqual(len(nh2.resolved_load_steps), 4)
         self.assertEqual(len(hw.resolved_load_steps), 8)
+        self.assertEqual(len(ab.resolved_load_steps), 10)
         self.assertAlmostEqual(nh2.resolved_load_steps[-1], 0.4)
         self.assertAlmostEqual(hw.resolved_load_steps[-1], 0.8)
+        self.assertAlmostEqual(ab.resolved_load_steps[-1], 0.5)
+
+    def test_arruda_boyce_energy_is_zero_at_reference_state(self):
+        energy = _arruda_boyce_energy_density(
+            I1_bar=3.0,
+            J=1.0,
+            mu=1.0,
+            lambda_m=3.0,
+            bulk_modulus=3.0,
+        )
+        self.assertAlmostEqual(energy, 0.0)
+
+    def test_config_rejects_invalid_arruda_boyce_parameters(self):
+        with self.assertRaises(ValueError):
+            ForwardFEMBenchmarkConfig(arruda_boyce_mu=0.0)
+        with self.assertRaises(ValueError):
+            ForwardFEMBenchmarkConfig(arruda_boyce_lambda_m=1.0)
+        with self.assertRaises(ValueError):
+            ForwardFEMBenchmarkConfig(arruda_boyce_bulk_modulus=0.0)
 
     def test_custom_load_steps_override_default(self):
         config = ForwardFEMBenchmarkConfig(material_model="IH", load_steps=(0.1, 0.25, 0.5))

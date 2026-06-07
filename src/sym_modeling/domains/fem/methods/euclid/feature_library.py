@@ -132,3 +132,61 @@ def getNumberOfFeatures():
     if CONSIDER_GENT_THOMAS:
         num_features += 1
     return num_features
+
+
+def _power_expression(name, exponent):
+    if exponent == 0:
+        return None
+    if exponent == 1:
+        return name
+    return "%s**%d" % (name, exponent)
+
+
+def getFeatureExpressionTerms():
+    """
+    Return the fixed EUCLID feature library as readable strain-energy terms.
+    """
+    terms = []
+    for p in range(1, POLYNOMIAL_DEGREE + 1):
+        for q in range(p + 1):
+            factors = [
+                part
+                for part in (
+                    _power_expression("K1", p - q),
+                    _power_expression("K2", q),
+                )
+                if part is not None
+            ]
+            terms.append(" * ".join(factors))
+
+    for m in range(1, VOLUMETRIC_DEGREE + 1):
+        terms.append(_power_expression("Jm1", 2 * m))
+
+    if CONSIDER_GENT_THOMAS:
+        terms.append("log((K2 + 3) / 3)")
+
+    return terms
+
+
+def formatFeatureExpression(theta, active_threshold=1e-12):
+    """
+    Format a coefficient vector as W = sum_i theta_i Q_i.
+    """
+    theta = np.asarray(theta, dtype=float).reshape(-1)
+    terms = getFeatureExpressionTerms()
+    if theta.size != len(terms):
+        raise ValueError(
+            "Expected %d EUCLID coefficients, got %d."
+            % (len(terms), theta.size)
+        )
+
+    pieces = []
+    for coefficient, term in zip(theta, terms):
+        if abs(coefficient) <= active_threshold:
+            continue
+        coefficient_text = "%.12g" % float(coefficient)
+        pieces.append("(%s) * (%s)" % (coefficient_text, term))
+
+    if not pieces:
+        return "0.0"
+    return " + ".join(pieces)

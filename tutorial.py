@@ -11,9 +11,8 @@ def _print_version_error():
     message = (
         "tutorial.py requires Python {major}.{minor}+.\n"
         "Current interpreter: {executable} ({version})\n\n"
-        "Use the FEniCSx Conda environment from environment.yml, for example:\n"
-        "  conda activate sym-modeling-fenicsx\n"
-        "  python tutorial.py --workspace output/my_euclid_run\n"
+        "Use the FEniCSx Docker environment, for example:\n"
+        "  docker compose run --rm fenicsx python tutorial.py --workspace output/my_euclid_run\n"
     ).format(
         major=MIN_PYTHON[0],
         minor=MIN_PYTHON[1],

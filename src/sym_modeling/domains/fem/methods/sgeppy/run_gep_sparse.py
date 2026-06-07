@@ -29,8 +29,46 @@ def _parse_loadsteps(value: str | None) -> list[int] | None:
     return [int(part) for part in parts]
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge *override* into *base*, returning a new dict.
+
+    For nested dicts, keys are merged recursively.  For all other types,
+    the override value wins.  Neither input dict is mutated.
+    """
+    result = dict(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _load_payload_with_inheritance(path: Path, _seen: set[str] | None = None) -> dict:
+    """Load a JSON config, resolving ``"extends"`` chains recursively.
+
+    Raises ``FileNotFoundError`` for missing parents and ``ValueError``
+    for circular inheritance.
+    """
+    resolved = path.resolve()
+    seen = _seen if _seen is not None else set()
+    if str(resolved) in seen:
+        raise ValueError("Circular config inheritance detected: %s" % " -> ".join(sorted(seen)))
+    seen.add(str(resolved))
+
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    extends = payload.pop("extends", None)
+    if extends is not None:
+        parent_path = resolved.parent / extends
+        if not parent_path.is_file():
+            raise FileNotFoundError("Config parent not found: %s (referenced from %s)" % (parent_path, resolved))
+        parent_payload = _load_payload_with_inheritance(parent_path, seen)
+        payload = _deep_merge(parent_payload, payload)
+    return payload
+
+
 def config_from_file(path: str | Path) -> SGEPWorkflowConfig:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    payload = _load_payload_with_inheritance(Path(path))
     if "sgeppy" not in payload:
         raise ValueError("sgeppy config files must contain a top-level 'sgeppy' object.")
     values = dict(payload["sgeppy"])
@@ -64,12 +102,25 @@ def _apply_overrides(config: SGEPWorkflowConfig, args: argparse.Namespace) -> SG
     workflow_values = {field.name: getattr(config, field.name) for field in fields(SGEPWorkflowConfig)}
     model_values = {field.name: getattr(config.model, field.name) for field in fields(SGEPConfig)}
 
-    for key in ("data_dir", "loadsteps", "output_dir"):
+    for key in (
+        "data_dir",
+        "loadsteps",
+        "noise_level",
+        "output_dir",
+        "backend",
+        "precision",
+        "cache_size",
+        "gene_cache_size",
+    ):
         value = getattr(args, key)
         if value is not None:
             workflow_values[key] = value
-    if args.fitting_mode is not None:
-        workflow_values["fitting_mode"] = args.fitting_mode
+    if args.disable_cache:
+        workflow_values["cache_enabled"] = False
+    if args.disable_cache_device_outputs:
+        workflow_values["cache_device_outputs"] = False
+    if args.disable_generation_log:
+        workflow_values["generation_log"] = False
     if args.loadsteps is not None:
         workflow_values["loadsteps"] = _parse_loadsteps(args.loadsteps)
     if args.quiet:
@@ -81,6 +132,7 @@ def _apply_overrides(config: SGEPWorkflowConfig, args: argparse.Namespace) -> SG
         "population_size": args.population_size,
         "n_genes": args.n_genes,
         "random_seed": args.seed,
+        "early_stop_value": args.early_stop_value,
         "fitness_metrics": _parse_csv(args.fitness_metrics),
         "epsilons": _parse_epsilons(args.epsilons),
     }
@@ -93,18 +145,26 @@ def _apply_overrides(config: SGEPWorkflowConfig, args: argparse.Namespace) -> SG
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run geppy-backed SGEP direct-stress discovery.")
+    parser = argparse.ArgumentParser(description="Run geppy-backed SGEPPY FEM discovery.")
     parser.add_argument("--config", required=True, help="Path to a JSON file with a top-level 'sgeppy' object.")
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--loadsteps", default=None, help="Comma-separated load steps.")
-    parser.add_argument("--fitting-mode", choices=("direct_stress", "weak_form"), default=None)
+    parser.add_argument("--noise-level", type=float, default=None, help="Additional FEM displacement noise level.")
+    parser.add_argument("--backend", choices=("jax", "torch"), default=None)
+    parser.add_argument("--precision", choices=("float64", "float32"), default=None)
+    parser.add_argument("--cache-size", type=int, default=None)
+    parser.add_argument("--gene-cache-size", type=int, default=None)
+    parser.add_argument("--disable-cache", action="store_true", default=False)
+    parser.add_argument("--disable-cache-device-outputs", action="store_true", default=False)
+    parser.add_argument("--disable-generation-log", action="store_true", default=False)
     parser.add_argument("--generations", type=int, default=None)
     parser.add_argument("--population-size", type=int, default=None)
     parser.add_argument("--n-genes", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--early-stop-value", type=float, default=None)
     parser.add_argument("--fitness-metrics", default=None, help="Comma-separated metrics, e.g. rmse,aic.")
-    parser.add_argument("--epsilons", default=None, help="Comma-separated epsilons, e.g. none,10.")
+    parser.add_argument("--epsilons", default=None, help="Comma-separated fitness constraints, e.g. none,10.")
     parser.add_argument("--quiet", action="store_true", default=False)
     return parser
 

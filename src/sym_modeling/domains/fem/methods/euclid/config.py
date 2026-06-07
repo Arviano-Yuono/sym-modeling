@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-FORWARD_MODEL_NAMES = ("NH2", "NH4", "IH", "HW", "GT")
+FORWARD_MODEL_NAMES = ("NH2", "NH4", "IH", "HW", "GT", "AB")
 
 _MODEL_ALIASES = {
     "NH2": "NH2",
@@ -12,6 +12,7 @@ _MODEL_ALIASES = {
     "IH": "IH",
     "HW": "HW",
     "GT": "GT",
+    "AB": "AB",
     "NEOHOOKEANJ2": "NH2",
     "NEO_HOOKEAN_J2": "NH2",
     "NEOHOOKEANJ4": "NH4",
@@ -123,6 +124,8 @@ class EuclidConfig:
             return list(self.loadstepsOverride)
         if self.str_model in {"NH2", "NH4"}:
             return [10, 20, 30, 40]
+        if self.str_model == "AB":
+            return [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
         return [10, 20, 30, 40, 50, 60, 70, 80]
 
     @property
