@@ -18,9 +18,9 @@ from sym_modeling.domains.fem.methods.common.lp_solver import apply_penalty_lp_i
 from sym_modeling.domains.fem.methods.common.regression import SparseFitResult, regression_metrics
 from sym_modeling.domains.fem.methods.common.stress_data import (
     StressDataset,
+    build_stress_dataset_from_F,
     build_stress_dataset_from_fem_data,
     invariant_variables,
-    load_stress_dataset_from_euclid_csv,
     reference_variables,
     resolve_loadsteps,
     synthetic_neo_hookean_dataset,
@@ -52,7 +52,7 @@ class WeakFormConfig:
 @dataclass
 class SGEPWorkflowConfig:
     model: SGEPConfig = field(default_factory=SGEPConfig)
-    backend: str = "jax"
+    backend: str = "torch"
     weak_form: WeakFormConfig = field(default_factory=WeakFormConfig)
     data_dir: str | None = None
     loadsteps: list[int] | None = None
@@ -141,7 +141,8 @@ class SGEPWorkflow:
         self._backend = create_weak_form_backend(self.config, self._backend_timing)
         self._backend.configure()
         self.dataset = self._load_dataset()
-        self.fem_datasets = self._load_fem_datasets()
+        if self.fem_datasets is None:
+            self.fem_datasets = self._load_fem_datasets()
         self.weak_form_cache = self._build_weak_form_cache()
         variables = invariant_variables(self.dataset, self.config.model.variable_names)
         builder = self._backend.make_stress_feature_builder(
@@ -202,12 +203,13 @@ class SGEPWorkflow:
 
     def _load_dataset(self) -> StressDataset:
         if self.config.data_dir is not None:
-            self._log("Loading FEM stress data from %s." % self.config.data_dir)
-            return load_stress_dataset_from_euclid_csv(
-                self.config.data_dir,
-                loadsteps=self.config.loadsteps,
+            if self.fem_datasets is None:
+                self.fem_datasets = self._load_fem_datasets()
+            self._log("Building FEM kinematic data from %s." % self.config.data_dir)
+            return _build_workflow_stress_dataset(
+                self.fem_datasets,
+                name=self.config.data_dir,
                 max_elements_per_loadstep=self.config.max_elements_per_loadstep,
-                noise_level=self.config.noise_level,
             )
         self._log("Using synthetic neo-Hookean data.")
         return synthetic_neo_hookean_dataset(
@@ -749,6 +751,35 @@ class SGEPWorkflow:
 
 def train_sgep(X, y, config: SGEPConfig | None = None) -> SGEP:
     return SGEP(config).fit(X, y)
+
+
+def _select_rows(array: np.ndarray, max_rows: int | None) -> np.ndarray:
+    if max_rows is None or max_rows <= 0 or array.shape[0] <= max_rows:
+        return array
+    indices = np.linspace(0, array.shape[0] - 1, max_rows).astype(int)
+    return array[indices]
+
+
+def _build_workflow_stress_dataset(
+    fem_datasets: Sequence,
+    name: str,
+    max_elements_per_loadstep: int | None,
+) -> StressDataset:
+    if not fem_datasets:
+        raise ValueError("No FEM load-step datasets were loaded for SGEPPY.")
+
+    F_parts = []
+    P_parts = []
+    for data in fem_datasets:
+        dataset = build_stress_dataset_from_fem_data(data)
+        F_parts.append(_select_rows(dataset.F, max_elements_per_loadstep))
+        P_parts.append(_select_rows(dataset.P, max_elements_per_loadstep))
+
+    return build_stress_dataset_from_F(
+        np.vstack(F_parts),
+        np.vstack(P_parts),
+        name=name,
+    )
 
 
 def stress_feature_builder(
