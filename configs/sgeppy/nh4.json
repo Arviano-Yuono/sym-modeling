@@ -3,22 +3,7 @@
   "sgeppy": {
     "data_dir": "dataset/fem_data/plate_hole_fenics/NH4",
     "loadsteps": [10, 20, 30],
-    "output_dir": "output/sgeppy_results_jax/nh4",
-    "weak_form": {
-      "balance": 100.0,
-      "penalty_lp": 1e-1,
-      "p": 0.1,
-      "num_increments": 5,
-      "factor_increments": 5.0,
-      "num_guesses": 5,
-      "num_iterations": 200,
-      "threshold_iter": 1e-6,
-      "threshold": 5e-2
-    },
-    "model": {
-      "n_genes": 2,
-      "fitness_metrics": ["rmse"],
-      "early_stop_value": 1e-5
+    "output_dir": "output/sgeppy_results_jax/nh4"
     }
-  }
+  
 }
