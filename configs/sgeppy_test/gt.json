@@ -1,0 +1,31 @@
+{
+  "extends": "_base.json",
+  "sgeppy": {
+    "data_dir": "dataset/fem_data/plate_hole_fenics/GT",
+    "loadsteps": [10, 20, 30, 40, 50, 60, 70, 80],
+    "output_dir": "output/sgeppy_results_jax/gt",
+    "weak_form": {
+      "balance": 50.0,
+      "penalty_lp": 10,
+      "p": 0.2,
+      "num_increments": 5,
+      "factor_increments": 5.0,
+      "num_guesses": 5,
+      "num_iterations": 200,
+      "threshold_iter": 5e-2,
+      "threshold": 5e-2
+    },
+    "model": {
+      "variable_names": ["K1", "K2", "Jm1", "logI13", "logI23"],
+      "mut_uniform_ind_pb": 0.01,
+      "mut_uniform_pb": 1.0,
+      "mut_invert_pb": 0.025,
+      "mut_is_transpose_pb": 0.025,
+      "mut_ris_transpose_pb": 0.025,
+      "mut_gene_transpose_pb": 0.025,
+      "cx_one_point_pb": 0.6,
+      "cx_two_point_pb": 0.3,
+      "cx_gene_pb": 0.1
+    }
+  }
+}
