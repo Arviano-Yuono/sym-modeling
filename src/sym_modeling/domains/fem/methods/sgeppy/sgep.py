@@ -33,7 +33,7 @@ UNARY_OPS = {
     "sin": ops.sin,
     "cos": ops.cos,
 }
-FITNESS_METRICS = {"mse", "rmse", "rss", "aic", "aicc"}
+FITNESS_METRICS = {"mse", "rmse", "rss", "aic", "aicc", "active_terms"}
 _CLASS_IDS = count()
 
 
@@ -416,6 +416,8 @@ class SGEP:
     def _metric_value(fit, metric: str) -> float:
         if metric == "mse":
             return float(fit.metrics.rss / fit.metrics.num_samples)
+        if metric == "active_terms":
+            return float(fit.metrics.num_parameters)
         return float(getattr(fit.metrics, metric))
 
     def feature_matrix(self, X, individual=None) -> np.ndarray:
