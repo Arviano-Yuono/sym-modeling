@@ -246,6 +246,44 @@ class SGEPPYTests(unittest.TestCase):
         self.assertTrue(np.allclose(individuals[1].theta, [2.0]))
         self.assertTrue(np.array_equal(individuals[0].valid_mask, [True]))
 
+    def test_active_terms_metric_is_supported(self):
+        config = GeppySGEPConfig(
+            variable_names=("x",),
+            binary_operators=("add",),
+            unary_operators=(),
+            fitness_metrics=("active_terms",),
+            verbose=False,
+        )
+        fit = SimpleNamespace(
+            metrics=SimpleNamespace(
+                num_parameters=3,
+                rmse=0.25,
+            )
+        )
+
+        self.assertEqual(config.fitness_metrics, ("active_terms",))
+        self.assertEqual(GeppySGEP._metric_value(fit, "active_terms"), 3.0)
+
+    def test_active_terms_epsilon_fitness_uses_violation_then_rmse(self):
+        model = GeppySGEP(
+            GeppySGEPConfig(
+                variable_names=("x",),
+                binary_operators=("add",),
+                unary_operators=(),
+                fitness_metrics=("active_terms", "rmse"),
+                epsilons=(2, None),
+                verbose=False,
+            )
+        )
+        fit = SimpleNamespace(
+            metrics=SimpleNamespace(
+                num_parameters=4,
+                rmse=0.125,
+            )
+        )
+
+        self.assertEqual(model._fitness_values(fit), (2.0, 0.125))
+
     def test_sparse_fit_recovers_separate_gene_coefficients(self):
         model = self._model()
         individual = self._individual(
