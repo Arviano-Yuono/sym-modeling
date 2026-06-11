@@ -54,6 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Root directory for sweep outputs.",
     )
     parser.add_argument(
+        "--backend",
+        choices=("jax", "torch"),
+        default=None,
+        help="Override the weak-form backend from the loaded config.",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Disable workflow and per-generation progress logs.",
@@ -83,18 +89,19 @@ def main(argv: list[str] | None = None) -> int:
             base_config = config_from_file(config_path)
             output_dir = output_root / noise / model_name
             model_config = replace(base_config.model, verbose=False) if args.quiet else base_config.model
+            backend = args.backend if args.backend is not None else base_config.backend
             config = replace(
                 base_config,
                 model=model_config,
-                backend="jax",
+                backend=backend,
                 noise_level=noise_level,
                 output_dir=str(output_dir),
                 progress_log=False if args.quiet else base_config.progress_log,
             )
 
             print(
-                "[sgeppy-weak-sweep] model=%s noise=%s output=%s"
-                % (model_name, noise, output_dir),
+                "[sgeppy-weak-sweep] model=%s noise=%s backend=%s output=%s"
+                % (model_name, noise, config.backend, output_dir),
                 flush=True,
             )
             if args.dry_run:
