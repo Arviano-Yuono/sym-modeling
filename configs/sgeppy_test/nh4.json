@@ -3,6 +3,6 @@
   "sgeppy": {
     "data_dir": "dataset/fem_data/plate_hole_fenics/NH4",
     "loadsteps": [10, 20, 30],
-    "output_dir": "output/sgeppy_results_jax/nh4"
+    "output_dir": "output/sgeppy_results_torch/nh4"
   }
 }
