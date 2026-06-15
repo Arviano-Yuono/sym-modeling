@@ -173,6 +173,13 @@ class SGEPWorkflow:
             "num_samples": fit.metrics.num_samples,
             "num_parameters": fit.metrics.num_parameters,
         }
+        metrics.update(
+            self._separated_weak_lp_metrics(
+                self.model.best_individual.theta,
+                fit.metrics.rss,
+                fit.metrics.rmse,
+            )
+        )
         history = [dict(row) for row in self.model.logbook]
         timing = {
             "wall_seconds": time.perf_counter() - wall_start,
@@ -681,6 +688,32 @@ class SGEPWorkflow:
             threshold_iter=float(weak.threshold_iter),
             threshold=float(weak.threshold),
         )
+
+    def _separated_weak_lp_metrics(
+        self,
+        theta: np.ndarray,
+        weak_cost: float,
+        weak_rmse: float,
+    ) -> dict:
+        lambda_lp = float(self.config.weak_form.penalty_lp)
+        p_norm = float(
+            np.sum(
+                np.power(
+                    np.abs(np.asarray(theta, dtype=float)),
+                    float(self.config.weak_form.p),
+                )
+            )
+        )
+        sparsity_cost = lambda_lp * p_norm
+        weak_cost = float(weak_cost)
+        return {
+            "weak_accuracy_cost": weak_cost,
+            "weak_accuracy_rmse": float(weak_rmse),
+            "lp_norm": p_norm,
+            "lp_sparsity_cost": float(sparsity_cost),
+            "lp_total_cost": float(weak_cost + sparsity_cost),
+            "lambda_lp": lambda_lp,
+        }
 
     def _log(self, message: str) -> None:
         if self.config.progress_log:
