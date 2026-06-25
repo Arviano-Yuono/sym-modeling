@@ -9,6 +9,8 @@ import re
 from pathlib import Path
 from typing import Iterable
 
+import sympy as sp
+
 
 DEFAULT_INPUT_ROOT = "output/sgeppy_results_jax"
 DEFAULT_MODELS = ("nh2", "nh4", "ih", "hw", "gt", "ab")
@@ -21,6 +23,16 @@ LATEX_NAMES = {
     "logI13": r"\log(I_1 / 3)",
     "logI23": r"\log(I_2 / 3)",
 }
+LATEX_SYMBOL_NAMES = {
+    "K1": "K_1",
+    "K2": "K_2",
+    "I1": "I_1",
+    "I2": "I_2",
+    "I3": "I_3",
+    "Jm1": r"\left(J - 1\right)",
+    "logI13": r"\log(I_1 / 3)",
+    "logI23": r"\log(I_2 / 3)",
+}
 TEXT_NAMES = {
     "K1": "K1",
     "K2": "K2",
@@ -28,10 +40,31 @@ TEXT_NAMES = {
     "logI13": "log(I1 / 3)",
     "logI23": "log(I2 / 3)",
 }
+DISPLAY_FUNCTIONS = {
+    "protected_div": lambda a, b: a / b,
+    "protected_sqrt": sp.sqrt,
+    "protected_log": sp.log,
+    "protected_exp": sp.exp,
+    "sqrt": sp.sqrt,
+    "log": sp.log,
+    "ln": sp.log,
+    "exp": sp.exp,
+    "sin": sp.sin,
+    "cos": sp.cos,
+    "square": lambda x: x**2,
+    "cube": lambda x: x**3,
+}
 
 
 def _parse_csv_strings(value: str) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return parsed
 
 
 def _strip_outer_parens(text: str) -> str:
@@ -48,6 +81,63 @@ def _format_number(value: object) -> str:
     if isinstance(value, float):
         return "%.8g" % value
     return str(value)
+
+
+def _expression_names(expression: str) -> tuple[set[str], set[str]]:
+    try:
+        parsed = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return set(), set()
+    called_names = {
+        node.func.id
+        for node in ast.walk(parsed)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    names = {node.id for node in ast.walk(parsed) if isinstance(node, ast.Name)}
+    return names, called_names
+
+
+def _round_sympy_numbers(expression, decimals: int | None):
+    if decimals is None:
+        return expression
+    replacements = {}
+    for number in expression.atoms(sp.Float):
+        value = float(number)
+        if not math.isfinite(value):
+            continue
+        if decimals == 0:
+            replacements[number] = sp.Integer(round(value))
+        else:
+            replacements[number] = sp.Float(f"{value:.{decimals}f}")
+    return expression.xreplace(replacements)
+
+
+def _sympify_display_expression(expression: str):
+    names, called_names = _expression_names(expression)
+    parser_locals = {
+        name: sp.Symbol(name)
+        for name in names
+        if name not in called_names and name not in DISPLAY_FUNCTIONS
+    }
+    parser_locals.update(
+        {
+            name: sp.Function(name)
+            for name in called_names
+            if name not in DISPLAY_FUNCTIONS
+        }
+    )
+    parser_locals.update(DISPLAY_FUNCTIONS)
+    return sp.sympify(expression, locals=parser_locals)
+
+
+def simplify_expression_for_display(expression: str, round_decimals: int | None = None) -> str:
+    if not expression or not expression.strip():
+        return expression
+    try:
+        simplified = sp.simplify(_sympify_display_expression(expression))
+    except Exception:
+        return expression
+    return str(_round_sympy_numbers(simplified, round_decimals))
 
 
 def _latex_node(node: ast.AST) -> str:
@@ -99,13 +189,23 @@ def expression_to_latex(expression: str) -> str:
     if not expression:
         return ""
     try:
-        parsed = ast.parse(expression, mode="eval")
+        parsed = _sympify_display_expression(expression)
+    except Exception:
+        parsed = None
+    if parsed is not None:
+        symbol_names = {
+            symbol: LATEX_SYMBOL_NAMES.get(symbol.name, symbol.name)
+            for symbol in parsed.free_symbols
+        }
+        return sp.latex(parsed, symbol_names=symbol_names)
+    try:
+        parsed_ast = ast.parse(expression, mode="eval")
     except SyntaxError:
         latex = expression
         for name, replacement in LATEX_NAMES.items():
             latex = re.sub(r"\b%s\b" % re.escape(name), replacement, latex)
         return latex.replace("*", r"\,")
-    return _strip_outer_parens(_latex_node(parsed))
+    return _strip_outer_parens(_latex_node(parsed_ast))
 
 
 def expression_to_text(expression: str) -> str:
@@ -130,6 +230,10 @@ def _safe_float(value) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _format_optional_scientific(value: float | None) -> str:
+    return "" if value is None else "%.6e" % value
+
+
 def _load_payload(model_dir: Path) -> tuple[dict, Path] | None:
     for filename in ("summary.json", "best_so_far.json"):
         path = model_dir / filename
@@ -138,13 +242,13 @@ def _load_payload(model_dir: Path) -> tuple[dict, Path] | None:
     return None
 
 
-def _row_from_payload(model: str, payload: dict, source_path: Path) -> dict:
+def _row_from_payload(model: str, payload: dict, source_path: Path, round_decimals: int | None = None) -> dict:
     metrics = payload.get("metrics", {})
     best_fitness = payload.get("best_fitness") or []
     rmse = _safe_float(metrics.get("rmse"))
     if rmse is None and best_fitness:
         rmse = _safe_float(best_fitness[0])
-    expression = payload.get("best_expression", "")
+    expression = simplify_expression_for_display(payload.get("best_expression", ""), round_decimals=round_decimals)
     active_terms = metrics.get("num_parameters")
     if active_terms is None:
         active_terms = metrics.get("active_terms")
@@ -161,7 +265,7 @@ def _row_from_payload(model: str, payload: dict, source_path: Path) -> dict:
     }
 
 
-def load_expression_rows(input_root: Path, models: Iterable[str]) -> list[dict]:
+def load_expression_rows(input_root: Path, models: Iterable[str], round_decimals: int | None = None) -> list[dict]:
     rows = []
     for model in models:
         model_dir = input_root / model
@@ -171,7 +275,7 @@ def load_expression_rows(input_root: Path, models: Iterable[str]) -> list[dict]:
         if loaded is None:
             continue
         payload, source_path = loaded
-        rows.append(_row_from_payload(model, payload, source_path))
+        rows.append(_row_from_payload(model, payload, source_path, round_decimals=round_decimals))
     return rows
 
 
@@ -230,17 +334,23 @@ def write_latex(rows: list[dict], path: Path, title: str = DEFAULT_TITLE) -> Non
         "%% %s." % title,
         r"% Generated by sym-util-print.",
         "",
+        r"\begin{tabular}{lllp{0.68\linewidth}}",
+        r"\hline",
+        r"Model & RMSE & Active terms & Expression \\",
+        r"\hline",
     ]
     for row in rows:
-        lines.extend(
-            [
-                r"\paragraph{%s}" % row["model"].upper(),
-                r"\[",
-                r"W = %s" % row["latex_expression"],
-                r"\]",
-                "",
-            ]
+        active_terms = "" if row["active_terms"] is None else str(row["active_terms"])
+        lines.append(
+            r"%s & %s & %s & $W = %s$ \\"
+            % (
+                row["model"].upper(),
+                _format_optional_scientific(row["rmse"]),
+                active_terms,
+                row["latex_expression"],
+            )
         )
+    lines.extend([r"\hline", r"\end{tabular}", ""])
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -264,6 +374,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_TITLE,
         help="Title used in Markdown and LaTeX reports.",
     )
+    parser.add_argument(
+        "--round-decimals",
+        type=_nonnegative_int,
+        default=4,
+        help="Round numeric coefficients in exported expressions to this many decimal places.",
+    )
     return parser
 
 
@@ -271,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     input_root = Path(args.input_root)
     output_dir = Path(args.output_dir) if args.output_dir else input_root / "expression_report"
-    rows = load_expression_rows(input_root, _parse_csv_strings(args.models))
+    rows = load_expression_rows(input_root, _parse_csv_strings(args.models), round_decimals=args.round_decimals)
     if not rows:
         raise FileNotFoundError("No expression summaries found under %s" % input_root)
 
