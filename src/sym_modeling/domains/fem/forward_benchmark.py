@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import csv
 import json
 import shutil
@@ -10,7 +11,7 @@ from typing import Any
 import numpy as np
 
 
-SUPPORTED_FORWARD_BENCHMARK_MODELS = ("NH2", "NH4", "IH", "HW", "GT", "AB")
+SUPPORTED_FORWARD_BENCHMARK_MODELS = ("NH2", "NH4", "IH", "HW", "GT", "AB", "SGEPPY")
 
 BENCHMARK_BOUNDARY_TAGS = {
     "LEFT": 1,
@@ -55,6 +56,10 @@ class ForwardFEMBenchmarkConfig:
     arruda_boyce_mu: float = 1.0
     arruda_boyce_lambda_m: float = 3.0
     arruda_boyce_bulk_modulus: float = 3.0
+
+    # Custom SGEPPY strain-energy density W(K1, K2, Jm1, ...).
+    sgeppy_expression: str | None = None
+    sgeppy_expression_path: str | Path | None = None
 
     save_debug_fields: bool = True
     use_comm_self: bool = True
@@ -105,6 +110,19 @@ class ForwardFEMBenchmarkConfig:
             raise ValueError("arruda_boyce_lambda_m must be greater than 1.")
         if self.arruda_boyce_bulk_modulus <= 0.0:
             raise ValueError("arruda_boyce_bulk_modulus must be positive.")
+        has_inline_expression = self.sgeppy_expression is not None and self.sgeppy_expression.strip() != ""
+        has_expression_path = self.sgeppy_expression_path is not None
+        if self.material_model == "SGEPPY":
+            if has_inline_expression == has_expression_path:
+                raise ValueError(
+                    "material_model='SGEPPY' requires exactly one of "
+                    "sgeppy_expression or sgeppy_expression_path."
+                )
+        elif has_inline_expression or has_expression_path:
+            raise ValueError(
+                "sgeppy_expression and sgeppy_expression_path are only valid "
+                "when material_model='SGEPPY'."
+            )
         tag_values = [self.left_tag, self.bottom_tag, self.right_tag, self.top_tag, self.hole_tag]
         if any(tag <= 0 for tag in tag_values):
             raise ValueError("All boundary tags must be positive integers.")
@@ -130,7 +148,7 @@ class ForwardFEMBenchmarkConfig:
 
         if self.material_model == "AB":
             return tuple(0.05 * float(step) for step in range(1, 11))
-        num_steps = 4 if self.material_model in {"NH2", "NH4"} else 8
+        num_steps = 4 if self.material_model in {"NH2", "NH4", "SGEPPY"} else 8
         return tuple(0.1 * float(step) for step in range(1, num_steps + 1))
 
     @property
@@ -378,6 +396,124 @@ def _arruda_boyce_energy_density(
     return mu * distortional_energy + 0.5 * bulk_modulus * ((J - 1.0) ** 2)
 
 
+def _load_sgeppy_expression(path: str | Path) -> str:
+    expression_path = Path(path)
+    if not expression_path.is_file():
+        raise FileNotFoundError(expression_path)
+    text = expression_path.read_text(encoding="utf-8").strip()
+    if expression_path.suffix.lower() == ".json":
+        payload = json.loads(text)
+        expression = payload.get("best_expression")
+        if not isinstance(expression, str) or expression.strip() == "":
+            raise ValueError("SGEPPY JSON file must contain a non-empty 'best_expression'.")
+        return expression
+    if not text:
+        raise ValueError("SGEPPY expression file is empty: %s" % expression_path)
+    return text
+
+
+def _resolved_sgeppy_expression(config: ForwardFEMBenchmarkConfig) -> str:
+    if config.sgeppy_expression is not None and config.sgeppy_expression.strip() != "":
+        return config.sgeppy_expression.strip()
+    if config.sgeppy_expression_path is not None:
+        return _load_sgeppy_expression(config.sgeppy_expression_path)
+    raise ValueError("Missing SGEPPY expression.")
+
+
+def _ufl_clamp(ufl, value, lower: float, upper: float):
+    if hasattr(ufl, "max_value") and hasattr(ufl, "min_value"):
+        return ufl.min_value(ufl.max_value(value, lower), upper)
+    return ufl.conditional(ufl.lt(value, lower), lower, ufl.conditional(ufl.lt(upper, value), upper, value))
+
+
+def _sgeppy_variable_lookup(ufl, invariants: dict[str, Any]) -> dict[str, Any]:
+    K1 = invariants["I1_bar"] - 3.0
+    K2 = invariants["I2_bar"] - 3.0
+    J = invariants["J"]
+    return {
+        "I1": invariants["I1"],
+        "I2": invariants["I2"],
+        "I3": invariants["I3"],
+        "J": J,
+        "Jm1": J - 1.0,
+        "K1": K1,
+        "K2": K2,
+        "logI13": ufl.ln(K1 / 3.0 + 1.0),
+        "logI23": ufl.ln(K2 / 3.0 + 1.0),
+    }
+
+
+def _sgeppy_ast_to_ufl(node: ast.AST, ufl, variables: dict[str, Any]):
+    if isinstance(node, ast.Expression):
+        return _sgeppy_ast_to_ufl(node.body, ufl, variables)
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return float(node.value)
+    if isinstance(node, ast.Name):
+        if node.id not in variables:
+            raise ValueError("Unsupported SGEPPY variable: %s" % node.id)
+        return variables[node.id]
+    if isinstance(node, ast.UnaryOp):
+        value = _sgeppy_ast_to_ufl(node.operand, ufl, variables)
+        if isinstance(node.op, ast.USub):
+            return -value
+        if isinstance(node.op, ast.UAdd):
+            return value
+    if isinstance(node, ast.BinOp):
+        left = _sgeppy_ast_to_ufl(node.left, ufl, variables)
+        right = _sgeppy_ast_to_ufl(node.right, ufl, variables)
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, ast.Div):
+            return left / right
+        if isinstance(node.op, ast.Pow):
+            return left**right
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        name = node.func.id
+        args = [_sgeppy_ast_to_ufl(arg, ufl, variables) for arg in node.args]
+        eps = 1e-12
+        if name == "protected_div" and len(args) == 2:
+            denominator = ufl.conditional(ufl.lt(abs(args[1]), 1e-6), 1.0, args[1])
+            return args[0] / denominator
+        if name == "protected_sqrt" and len(args) == 1:
+            return ufl.sqrt(abs(args[0]) + eps)
+        if name in {"sqrt"} and len(args) == 1:
+            return ufl.sqrt(args[0])
+        if name == "protected_log" and len(args) == 1:
+            return ufl.ln(abs(args[0]) + eps)
+        if name in {"log", "ln"} and len(args) == 1:
+            return ufl.ln(args[0])
+        if name == "protected_exp" and len(args) == 1:
+            return ufl.exp(_ufl_clamp(ufl, args[0], -20.0, 20.0))
+        if name == "exp" and len(args) == 1:
+            return ufl.exp(args[0])
+        if name == "square" and len(args) == 1:
+            return args[0] ** 2
+        if name == "cube" and len(args) == 1:
+            return args[0] ** 3
+        if name == "sin" and len(args) == 1:
+            return ufl.sin(args[0])
+        if name == "cos" and len(args) == 1:
+            return ufl.cos(args[0])
+        raise ValueError("Unsupported SGEPPY function: %s" % name)
+    raise ValueError("Unsupported SGEPPY expression syntax: %s" % ast.dump(node))
+
+
+def _sgeppy_energy_density_from_expression(
+    expression: str,
+    ufl,
+    invariants: dict[str, Any],
+):
+    try:
+        parsed = ast.parse(expression, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError("Invalid SGEPPY expression syntax: %s" % expression) from exc
+    return _sgeppy_ast_to_ufl(parsed, ufl, _sgeppy_variable_lookup(ufl, invariants))
+
+
 def _benchmark_energy_density(
     ufl,
     invariants: dict[str, Any],
@@ -416,6 +552,12 @@ def _benchmark_energy_density(
             mu=config.arruda_boyce_mu,
             lambda_m=config.arruda_boyce_lambda_m,
             bulk_modulus=config.arruda_boyce_bulk_modulus,
+        )
+    if material_model == "SGEPPY":
+        return _sgeppy_energy_density_from_expression(
+            _resolved_sgeppy_expression(config),
+            ufl=ufl,
+            invariants=invariants,
         )
 
     raise ValueError("Unsupported material_model: %s" % material_model)
@@ -1293,6 +1435,8 @@ def run_forward_hyperelastic_benchmark(
         config_payload["output_dir"] = str(config_payload["output_dir"])
     if isinstance(config_payload.get("input_msh_path"), Path):
         config_payload["input_msh_path"] = str(config_payload["input_msh_path"])
+    if isinstance(config_payload.get("sgeppy_expression_path"), Path):
+        config_payload["sgeppy_expression_path"] = str(config_payload["sgeppy_expression_path"])
 
     results = {
         "config": config_payload,

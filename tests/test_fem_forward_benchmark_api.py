@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import math
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -21,7 +24,60 @@ from sym_modeling.domains.fem import (  # noqa: E402
     plot_forward_benchmark_loadsteps,
     run_forward_hyperelastic_benchmark,
 )
-from sym_modeling.domains.fem.forward_benchmark import _arruda_boyce_energy_density  # noqa: E402
+from sym_modeling.domains.fem.forward_benchmark import (  # noqa: E402
+    _arruda_boyce_energy_density,
+    _load_sgeppy_expression,
+    _sgeppy_energy_density_from_expression,
+)
+
+
+class _FakeUFL:
+    @staticmethod
+    def sqrt(value):
+        return math.sqrt(value)
+
+    @staticmethod
+    def ln(value):
+        return math.log(value)
+
+    @staticmethod
+    def exp(value):
+        return math.exp(value)
+
+    @staticmethod
+    def sin(value):
+        return math.sin(value)
+
+    @staticmethod
+    def cos(value):
+        return math.cos(value)
+
+    @staticmethod
+    def conditional(condition, true_value, false_value):
+        return true_value if condition else false_value
+
+    @staticmethod
+    def lt(left, right):
+        return left < right
+
+    @staticmethod
+    def min_value(left, right):
+        return min(left, right)
+
+    @staticmethod
+    def max_value(left, right):
+        return max(left, right)
+
+
+def _fake_invariants():
+    return {
+        "I1": 3.2,
+        "I2": 3.4,
+        "I3": 1.1,
+        "J": 1.05,
+        "I1_bar": 3.2,
+        "I2_bar": 3.4,
+    }
 
 
 class ForwardBenchmarkApiTests(unittest.TestCase):
@@ -32,6 +88,7 @@ class ForwardBenchmarkApiTests(unittest.TestCase):
         self.assertIn("NH2", SUPPORTED_FORWARD_BENCHMARK_MODELS)
         self.assertIn("GT", SUPPORTED_FORWARD_BENCHMARK_MODELS)
         self.assertIn("AB", SUPPORTED_FORWARD_BENCHMARK_MODELS)
+        self.assertIn("SGEPPY", SUPPORTED_FORWARD_BENCHMARK_MODELS)
         self.assertEqual(BENCHMARK_CELL_TAG, 11)
 
     def test_boundary_tag_map_contains_all_boundaries(self):
@@ -94,6 +151,49 @@ class ForwardBenchmarkApiTests(unittest.TestCase):
     def test_config_rejects_unknown_material(self):
         with self.assertRaises(ValueError):
             ForwardFEMBenchmarkConfig(material_model="FOO")
+
+    def test_sgeppy_config_requires_one_expression_source(self):
+        with self.assertRaises(ValueError):
+            ForwardFEMBenchmarkConfig(material_model="SGEPPY")
+        with self.assertRaises(ValueError):
+            ForwardFEMBenchmarkConfig(
+                material_model="SGEPPY",
+                sgeppy_expression="K1",
+                sgeppy_expression_path="best_so_far.json",
+            )
+        with self.assertRaises(ValueError):
+            ForwardFEMBenchmarkConfig(material_model="NH2", sgeppy_expression="K1")
+
+        config = ForwardFEMBenchmarkConfig(material_model="SGEPPY", sgeppy_expression="K1")
+        self.assertEqual(len(config.resolved_load_steps), 4)
+        self.assertAlmostEqual(config.resolved_load_steps[-1], 0.4)
+
+    def test_sgeppy_expression_can_be_loaded_from_best_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "best_so_far.json"
+            path.write_text(json.dumps({"best_expression": "0.5*K1 + 1.5*Jm1**2"}), encoding="utf-8")
+            self.assertEqual(_load_sgeppy_expression(path), "0.5*K1 + 1.5*Jm1**2")
+
+    def test_sgeppy_expression_parser_supports_generated_functions(self):
+        expression = (
+            "-0.280479773763*Jm1*K2 + 0.280479773763*protected_exp(K1) "
+            "+ protected_div(K1, 0.0) - protected_sqrt(K2) "
+            "+ square(logI13) + cube(logI23)"
+        )
+        value = _sgeppy_energy_density_from_expression(
+            expression,
+            ufl=_FakeUFL(),
+            invariants=_fake_invariants(),
+        )
+        self.assertTrue(np.isfinite(value))
+
+    def test_sgeppy_expression_parser_rejects_unsafe_syntax(self):
+        with self.assertRaises(ValueError):
+            _sgeppy_energy_density_from_expression(
+                "__import__('os').system('echo nope')",
+                ufl=_FakeUFL(),
+                invariants=_fake_invariants(),
+            )
 
     def test_config_rejects_invalid_geometry(self):
         with self.assertRaises(ValueError):
