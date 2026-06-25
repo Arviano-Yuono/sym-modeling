@@ -24,6 +24,8 @@ dependencies = [
 
 [project.scripts]
 sym-fem-euclid = "sym_modeling.domains.fem.methods.euclid.run_euclid:main"
+sym-fem-denoise = "sym_modeling.domains.fem.methods.common.run_denoise:main"
+sym-fem-forward-compare = "sym_modeling.domains.fem.forward_comparison:main"
 sym-fem-sgeppy = "sym_modeling.domains.fem.methods.sgeppy.run_gep_sparse:main"
 sym-util-mesh = "sym_modeling.utils.plot_dolfinx_mesh:main"
 sym-util-print = "sym_modeling.utils.export_sgeppy_expressions:main"

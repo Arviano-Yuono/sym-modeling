@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import geppy as gep
 import numpy as np
+import sympy as sp
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -78,6 +79,29 @@ TORCH_CUDA_AVAILABLE = is_torch_cuda_backend_available()
 
 
 class SGEPPYTests(unittest.TestCase):
+    def test_separated_weak_lp_metrics_report_accuracy_and_sparsity_terms(self):
+        workflow = SGEPWorkflow(
+            SGEPWorkflowConfig(
+                weak_form=WeakFormConfig(
+                    penalty_lp=0.5,
+                    p=0.5,
+                )
+            )
+        )
+
+        metrics = workflow._separated_weak_lp_metrics(
+            np.array([4.0, 0.0, -9.0], dtype=float),
+            weak_cost=10.0,
+            weak_rmse=2.0,
+        )
+
+        self.assertEqual(metrics["weak_accuracy_cost"], 10.0)
+        self.assertEqual(metrics["weak_accuracy_rmse"], 2.0)
+        self.assertAlmostEqual(metrics["lp_norm"], 5.0)
+        self.assertAlmostEqual(metrics["lp_sparsity_cost"], 2.5)
+        self.assertAlmostEqual(metrics["lp_total_cost"], 12.5)
+        self.assertEqual(metrics["lambda_lp"], 0.5)
+
     def _model(
         self,
         variable_names: tuple[str, ...] = ("x", "y"),
@@ -121,6 +145,21 @@ class SGEPPYTests(unittest.TestCase):
         return individual
 
     @staticmethod
+    def _sympy_expression(expression: str, variable_names: tuple[str, ...]):
+        parser_locals = {name: sp.Symbol(name) for name in variable_names}
+        parser_locals.update(
+            {
+                "protected_div": sp.Function("protected_div"),
+                "protected_sqrt": sp.Function("protected_sqrt"),
+                "protected_log": sp.Function("protected_log"),
+                "protected_exp": sp.Function("protected_exp"),
+                "sin": sp.sin,
+                "cos": sp.cos,
+            }
+        )
+        return sp.sympify(expression, locals=parser_locals)
+
+    @staticmethod
     def _write_single_triangle_known_law(root: Path) -> np.ndarray:
         x_nodes = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=float)
         target_F = np.array([[1.08, 0.12], [0.04, 0.97]], dtype=float)
@@ -156,6 +195,54 @@ class SGEPPYTests(unittest.TestCase):
             reaction_forces=reaction_forces,
         )
         return theta
+
+    @staticmethod
+    def _write_single_triangle_without_piola(root: Path) -> np.ndarray:
+        step_dir = root / "10"
+        step_dir.mkdir(parents=True, exist_ok=True)
+        x_nodes = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=float)
+        target_F = np.array([[1.05, 0.08], [0.03, 0.98]], dtype=float)
+        u_nodes = ((target_F - np.eye(2, dtype=float)) @ x_nodes.T).T
+        grad_na, area = _compute_triangle_gradients(x_nodes)
+
+        with (step_dir / "output_nodes.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(("x", "y", "ux", "uy", "bcx", "bcy"))
+            for node, displacement in zip(x_nodes, u_nodes):
+                writer.writerow((node[0], node[1], displacement[0], displacement[1], 0, int(node[1] == 1.0)))
+        with (step_dir / "output_elements.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(("node1", "node2", "node3"))
+            writer.writerow((0, 1, 2))
+        with (step_dir / "output_integrator.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                (
+                    "gradNa_node1_x",
+                    "gradNa_node1_y",
+                    "gradNa_node2_x",
+                    "gradNa_node2_y",
+                    "gradNa_node3_x",
+                    "gradNa_node3_y",
+                    "qpWeight",
+                )
+            )
+            writer.writerow(
+                (
+                    grad_na[0, 0],
+                    grad_na[0, 1],
+                    grad_na[1, 0],
+                    grad_na[1, 1],
+                    grad_na[2, 0],
+                    grad_na[2, 1],
+                    area,
+                )
+            )
+        with (step_dir / "output_reactions.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(("forces",))
+            writer.writerow((0.0,))
+        return target_F
 
     def test_core_numpy_operators_are_protected_and_non_mutating(self):
         numerator = np.array([4.0, -3.0, 2.0], dtype=float)
@@ -364,9 +451,80 @@ class SGEPPYTests(unittest.TestCase):
 
         expression = sgeppy_workflow._reference_normalized_expression(model)
 
-        self.assertIn("(2) * (I1)", expression)
-        self.assertIn("+ (-6)", expression)
+        I1 = sp.Symbol("I1")
+        parsed = self._sympy_expression(expression, ("I1",))
+        self.assertEqual(sp.simplify(parsed - (2 * I1 - 6)), 0)
         self.assertAlmostEqual(sgeppy_workflow._reference_energy_offset(model), 6.0)
+
+    def test_workflow_best_expression_is_simplified_after_reference_normalization(self):
+        model = self._model(variable_names=("I1",), n_genes=2)
+        individual = self._individual(
+            model,
+            (
+                self._terminal_gene(model, "I1"),
+                self._terminal_gene(model, "I1"),
+            ),
+        )
+        individual.theta = np.array([1.0, 2.0], dtype=float)
+        individual.sparse_fit = SimpleNamespace(active_mask=np.array([True, True], dtype=bool))
+        model.best_individual = individual
+
+        expression = sgeppy_workflow._reference_normalized_expression(model)
+
+        I1 = sp.Symbol("I1")
+        parsed = self._sympy_expression(expression, ("I1",))
+        self.assertEqual(sp.simplify(parsed - (3 * I1 - 9)), 0)
+        self.assertNotIn("+ (-9)", expression)
+
+    def test_workflow_best_expression_preserves_protected_functions_when_simplifying(self):
+        model = self._model(binary_operators=("protected_div",), n_genes=2)
+        gene = self._binary_gene(model, "protected_div", "x", "y")
+        individual = self._individual(model, (gene, gene))
+        individual.theta = np.array([1.0, 2.0], dtype=float)
+        individual.sparse_fit = SimpleNamespace(active_mask=np.array([True, True], dtype=bool))
+        model.best_individual = individual
+
+        expression = sgeppy_workflow._reference_normalized_expression(model)
+
+        x, y = sp.Symbol("x"), sp.Symbol("y")
+        protected_div = sp.Function("protected_div")
+        parsed = self._sympy_expression(expression, ("x", "y"))
+        self.assertEqual(sp.simplify(parsed - 3 * protected_div(x, y)), 0)
+        self.assertIn("protected_div", expression)
+
+    def test_workflow_dataset_loading_allows_missing_reference_piola_for_weak_form(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir) / "dataset"
+            target_F = self._write_single_triangle_without_piola(root)
+            config = SGEPWorkflowConfig(
+                data_dir=str(root),
+                loadsteps=[10],
+                max_elements_per_loadstep=None,
+                progress_log=False,
+                model=GeppySGEPConfig(
+                    variable_names=("K1", "Jm1"),
+                    binary_operators=("add",),
+                    unary_operators=(),
+                    head_length=1,
+                    n_genes=2,
+                    population_size=3,
+                    n_elites=1,
+                    verbose=False,
+                ),
+            )
+            workflow = SGEPWorkflow(config)
+
+            dataset = workflow._load_dataset()
+            caches = workflow._build_weak_form_cache()
+
+            self.assertIsNotNone(workflow.fem_datasets)
+            self.assertEqual(len(workflow.fem_datasets), 1)
+            self.assertIsNone(workflow.fem_datasets[0].P)
+            self.assertTrue(np.allclose(dataset.F, target_F.reshape(1, 4), atol=1e-12))
+            self.assertTrue(np.allclose(dataset.P, np.zeros((1, 4)), atol=1e-12))
+            self.assertTrue(np.allclose(dataset.target_vector, np.zeros(4), atol=1e-12))
+            self.assertEqual(len(caches), 1)
+            self.assertTrue(np.allclose(caches[0].dataset.P, np.zeros((1, 4)), atol=1e-12))
 
     def test_stress_builder_filters_duplicate_gene_columns(self):
         dataset = synthetic_neo_hookean_dataset(num_samples=6, seed=3)
@@ -437,7 +595,7 @@ class SGEPPYTests(unittest.TestCase):
 
             config = config_from_file(config_path)
             self.assertEqual(config.backend, "jax")
-            self.assertEqual(SGEPWorkflowConfig().backend, "jax")
+            self.assertEqual(SGEPWorkflowConfig().backend, "torch")
             self.assertEqual(SGEPWorkflowConfig().precision, "float64")
             self.assertTrue(SGEPWorkflowConfig().cache_enabled)
             self.assertEqual(SGEPWorkflowConfig().cache_size, 256)
@@ -578,6 +736,17 @@ class SGEPPYTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(ValueError, "weak_form"):
+                config_from_file(config_path)
+
+    def test_config_rejects_denoise_key(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "sgeppy.json"
+            config_path.write_text(
+                json.dumps({"sgeppy": {"denoise": {"is_denoise": True}}}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "denoise"):
                 config_from_file(config_path)
 
     def test_config_rejects_legacy_operator_names(self):
@@ -893,6 +1062,7 @@ class SGEPPYTests(unittest.TestCase):
             root = Path(tmp_dir) / "dataset"
             expected_theta = self._write_single_triangle_known_law(root)
             config = SGEPWorkflowConfig(
+                backend="jax",
                 data_dir=str(root),
                 loadsteps=[10],
                 model=GeppySGEPConfig(
@@ -968,6 +1138,7 @@ class SGEPPYTests(unittest.TestCase):
             root = Path(tmp_dir) / "dataset"
             self._write_single_triangle_known_law(root)
             config = SGEPWorkflowConfig(
+                backend="jax",
                 data_dir=str(root),
                 loadsteps=[10],
                 output_dir=str(Path(tmp_dir) / "out"),
@@ -1007,6 +1178,7 @@ class SGEPPYTests(unittest.TestCase):
             root = Path(tmp_dir) / "dataset"
             expected_theta = self._write_single_triangle_known_law(root)
             config = SGEPWorkflowConfig(
+                backend="jax",
                 data_dir=str(root),
                 loadsteps=[10],
                 cache_enabled=False,
@@ -1182,7 +1354,7 @@ class SGEPPYTests(unittest.TestCase):
             with self.subTest(config=config_path.name):
                 config = config_from_file(config_path)
                 self.assertIsNotNone(config.model)
-                self.assertEqual(config.backend, "jax")
+                self.assertEqual(config.backend, "torch")
                 self.assertTrue(len(config.model.variable_names) > 0)
                 self.assertTrue(len(config.model.binary_operators) > 0)
 
@@ -1191,12 +1363,12 @@ class SGEPPYTests(unittest.TestCase):
 
         self.assertEqual(config.data_dir, "dataset/fem_data/plate_hole_fenics/AB")
         self.assertEqual(config.loadsteps, [5, 10, 15, 20, 25, 30, 35, 40, 45, 50])
-        self.assertEqual(config.output_dir, "output/sgeppy_results_jax/ab")
+        self.assertEqual(config.output_dir, "output/sgeppy_results_torch/ab")
         self.assertFalse(config.cache_device_outputs)
         self.assertEqual(config.model.binary_operators, ("add", "sub", "mul", "protected_div"))
         self.assertEqual(
             config.model.unary_operators,
-            ("square", "cube", "protected_sqrt", "protected_log", "protected_exp"),
+            ("square", "cube", "protected_sqrt"),
         )
 
     # -- PerGeneEvaluatorCache tests (no JAX required) --

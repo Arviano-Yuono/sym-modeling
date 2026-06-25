@@ -10,6 +10,7 @@ from typing import Sequence
 
 import geppy as gep
 import numpy as np
+import sympy as sp
 
 from .sgep import BatchEvaluationResult, SGEP, SGEPConfig
 from sym_modeling.domains.fem.data import FeatureSet
@@ -23,7 +24,6 @@ from sym_modeling.domains.fem.methods.common.stress_data import (
     invariant_variables,
     reference_variables,
     resolve_loadsteps,
-    synthetic_neo_hookean_dataset,
     variable_derivatives_wrt_F,
     variable_derivatives_wrt_invariants,
 )
@@ -47,7 +47,6 @@ class WeakFormConfig:
     num_iterations: int = 200
     threshold_iter: float = 1e-6
     threshold: float = 1e-2
-
 
 @dataclass
 class SGEPWorkflowConfig:
@@ -173,6 +172,13 @@ class SGEPWorkflow:
             "num_samples": fit.metrics.num_samples,
             "num_parameters": fit.metrics.num_parameters,
         }
+        metrics.update(
+            self._separated_weak_lp_metrics(
+                self.model.best_individual.theta,
+                fit.metrics.rss,
+                fit.metrics.rmse,
+            )
+        )
         history = [dict(row) for row in self.model.logbook]
         timing = {
             "wall_seconds": time.perf_counter() - wall_start,
@@ -211,13 +217,6 @@ class SGEPWorkflow:
                 name=self.config.data_dir,
                 max_elements_per_loadstep=self.config.max_elements_per_loadstep,
             )
-        self._log("Using synthetic neo-Hookean data.")
-        return synthetic_neo_hookean_dataset(
-            num_samples=self.config.synthetic_samples,
-            seed=self.config.model.random_seed,
-            mu=self.config.synthetic_mu,
-            bulk=self.config.synthetic_bulk,
-        )
 
     def _load_fem_datasets(self):
         data_path = Path(self.config.data_dir)
@@ -682,6 +681,32 @@ class SGEPWorkflow:
             threshold=float(weak.threshold),
         )
 
+    def _separated_weak_lp_metrics(
+        self,
+        theta: np.ndarray,
+        weak_cost: float,
+        weak_rmse: float,
+    ) -> dict:
+        lambda_lp = float(self.config.weak_form.penalty_lp)
+        p_norm = float(
+            np.sum(
+                np.power(
+                    np.abs(np.asarray(theta, dtype=float)),
+                    float(self.config.weak_form.p),
+                )
+            )
+        )
+        sparsity_cost = lambda_lp * p_norm
+        weak_cost = float(weak_cost)
+        return {
+            "weak_accuracy_cost": weak_cost,
+            "weak_accuracy_rmse": float(weak_rmse),
+            "lp_norm": p_norm,
+            "lp_sparsity_cost": float(sparsity_cost),
+            "lp_total_cost": float(weak_cost + sparsity_cost),
+            "lambda_lp": lambda_lp,
+        }
+
     def _log(self, message: str) -> None:
         if self.config.progress_log:
             print("[SGEPPY] %s" % message, flush=True)
@@ -1028,10 +1053,33 @@ def _reference_normalized_expression(model: SGEP, individual=None) -> str:
     expression = model.expression(individual)
     offset = _reference_energy_offset(model, individual)
     if not np.isfinite(offset) or abs(offset) < 1e-12:
+        final_expression = expression
+    elif expression == "0":
+        final_expression = "(%0.12g)" % float(-offset)
+    else:
+        final_expression = "%s + (%0.12g)" % (expression, float(-offset))
+    return _simplify_final_expression(final_expression, model.config.variable_names)
+
+
+def _simplify_final_expression(expression: str, variable_names: Sequence[str]) -> str:
+    if not expression.strip():
         return expression
-    if expression == "0":
-        return "(%0.12g)" % float(-offset)
-    return "%s + (%0.12g)" % (expression, float(-offset))
+    parser_locals = {name: sp.Symbol(name) for name in variable_names}
+    parser_locals.update(
+        {
+            "protected_div": sp.Function("protected_div"),
+            "protected_sqrt": sp.Function("protected_sqrt"),
+            "protected_log": sp.Function("protected_log"),
+            "protected_exp": sp.Function("protected_exp"),
+            "sin": sp.sin,
+            "cos": sp.cos,
+        }
+    )
+    try:
+        simplified = sp.simplify(sp.sympify(expression, locals=parser_locals))
+    except Exception:
+        return expression
+    return str(simplified)
 
 
 def _reference_energy_offset(model: SGEP, individual=None) -> float:

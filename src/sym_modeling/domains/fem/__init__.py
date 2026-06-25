@@ -14,6 +14,8 @@ _SYMBOL_MODULES = {
     "BENCHMARK_BOUNDARY_TAGS": (".forward_benchmark", "BENCHMARK_BOUNDARY_TAGS"),
     "BENCHMARK_CELL_TAG": (".forward_benchmark", "BENCHMARK_CELL_TAG"),
     "ForwardFEMBenchmarkConfig": (".forward_benchmark", "ForwardFEMBenchmarkConfig"),
+    "ForwardComparisonConfig": (".forward_comparison", "ForwardComparisonConfig"),
+    "ForwardComparisonResult": (".forward_comparison", "ForwardComparisonResult"),
     "SUPPORTED_HYPERELASTIC_MODELS": (".dolfinx", "SUPPORTED_HYPERELASTIC_MODELS"),
     "SUPPORTED_FORWARD_BENCHMARK_MODELS": (
         ".forward_benchmark",
@@ -41,6 +43,7 @@ _SYMBOL_MODULES = {
     "generate_hyperelastic_suite": (".io", "generate_hyperelastic_suite"),
     "loadFemData": (".io", "loadFemData"),
     "load_fem_dataset": (".io", "load_fem_dataset"),
+    "compare_forward_results": (".forward_comparison", "compare_forward_results"),
     "run_forward_hyperelastic_benchmark": (
         ".forward_benchmark",
         "run_forward_hyperelastic_benchmark",

@@ -21,6 +21,32 @@ loadFemData(...)
 
 This shared preprocessing is the most important consistency rule in the FEM code. Method-specific logic should start after invariants and derivative quantities are available.
 
+## Forward Validation
+
+After a discovered law has been run through the forward FEM benchmark, compare
+its generated output root against the reference FEM dataset with:
+
+```bash
+uv run sym-fem-forward-compare \
+  --forward-root output/forward_sgeppy/1e-4/ih \
+  --reference-root dataset/fem_data/plate_hole_fenics/IH
+```
+
+The comparison uses only shared numeric load-step folders and writes
+`comparison_summary.json`, `comparison_metrics.csv`, reaction plots, nodal
+displacement plots, deformation-gradient `F` plots, and first
+Piola-Kirchhoff stress `P` plots under `<forward-root>/comparison/`.
+
+For quick checks, restrict the load steps or plotted quantities:
+
+```bash
+uv run sym-fem-forward-compare \
+  --forward-root output/forward_euclid/0/AB \
+  --reference-root dataset/fem_data/plate_hole_fenics/AB \
+  --load-step 10 \
+  --plot-quantities ux,umag,Fxx,Fnorm,Pxx,Pnorm
+```
+
 ## EUCLID
 
 Source path:

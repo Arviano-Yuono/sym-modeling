@@ -5,7 +5,9 @@
     "loadsteps": [10, 20, 30, 40, 50, 60, 70, 80],
     "output_dir": "output/sgeppy_results_torch/gt",
     "model": {
-      "variable_names": ["K1", "K2", "Jm1", "logI13", "logI23"]
+      "variable_names": ["K1", "K2", "Jm1", "logI13", "logI23"],
+      "head_length": 4,
+      "n_genes": 10
     }
   }
 }

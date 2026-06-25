@@ -1,8 +1,14 @@
 {
   "extends": "_base.json",
   "sgeppy": {
-    "data_dir": "dataset/fem_data/plate_hole_fenics/NH2",
-    "loadsteps": [10, 20, 30],
-    "output_dir": "output/sgeppy_results_torch/nh2"
+    "data_dir": "dataset/fem_data/fenics_denoised/1e-4/NH2",
+    "loadsteps": [10, 20, 30, 40],
+    "output_dir": "output/sgeppy_results_torch/nh2",
+    "cache_size": 1024,
+    "cache_device_outputs": false,
+    "model": {
+      "binary_operators": ["add", "sub", "mul", "protected_div"],
+      "unary_operators": ["square", "cube", "protected_sqrt"]
+    }
   }
 }

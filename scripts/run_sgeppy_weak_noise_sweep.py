@@ -16,8 +16,8 @@ from sym_modeling.domains.fem.methods.sgeppy.run_gep_sparse import config_from_f
 from sym_modeling.domains.fem.methods.sgeppy.workflow import SGEPWorkflow  # noqa: E402
 
 
-DEFAULT_MODELS = ("gt", "hw", "ih", "nh2", "nh4")
-DEFAULT_NOISES = ("0", "1e-4", "1e-3")
+DEFAULT_MODELS = ("gt", "hw", "ih", "nh2", "nh4", "ab")
+DEFAULT_NOISES = ("1e-5" ,"1e-4")
 
 
 def _parse_csv_strings(value: str) -> list[str]:
@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--noises",
         default=",".join(DEFAULT_NOISES),
-        help="Comma-separated noise levels, e.g. 0,1e-4,1e-3.",
+        help="Comma-separated noise levels, e.g. 1e-5,1e-4,1e-3.",
     )
     parser.add_argument(
         "--output-root",
