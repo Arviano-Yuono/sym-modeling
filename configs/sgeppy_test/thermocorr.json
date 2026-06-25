@@ -1,8 +1,63 @@
 {
-  "extends": "_base.json",
   "sgeppy": {
     "data_dir": "dataset/fem_data/thermocorr/formatted_sampled_3k",
-    "loadsteps": [10, 20, 30, 40],
-    "output_dir": "output/sgeppy/thermocorr/"
+    "loadsteps": [10, 20, 30, 40, 50],
+    "output_dir": "output/sgeppy_test/thermocorr-simp/",
+
+    "max_elements_per_loadstep": null,
+    "noise_level": 0.0,
+    "progress_log": true,
+    "generation_log": true,
+    "backend": "torch",
+    "precision": "float64",
+    "cache_enabled": true,
+    "cache_size": 1024,
+    "cache_device_outputs": false,
+    "weak_form": {
+      "balance": 1.0,
+      "penalty_lp": 1e-4,
+      "p": 0.2,
+      "num_increments": 5,
+      "factor_increments": 5.0,
+      "num_guesses": 150,
+      "num_iterations": 200,
+      "threshold_iter": 5e-2,
+      "threshold": 5e-2
+    },
+    "model": {
+      "variable_names": ["K1", "K2", "Jm1"],
+      "binary_operators": ["add", "sub", "mul", "protected_div"],
+      "unary_operators": ["square", "cube", "protected_log", "protected_exp"],
+      "head_length": 5,
+      "n_genes": 6,
+      "population_size": 100,
+      "n_generations": 200,
+      "early_stop_value": 1e-14,
+      "n_elites": 2,
+      "hall_of_fame_size": 5,
+      "tournament_size": 2,
+      "mut_uniform_ind_pb": 0.03,
+      "mut_uniform_pb": 1.0,
+      "mut_invert_pb": 0.1,
+      "mut_is_transpose_pb": 0.1,
+      "mut_ris_transpose_pb": 0.1,
+      "mut_gene_transpose_pb": 0.1,
+      "cx_one_point_pb": 0.4,
+      "cx_two_point_pb": 0.2,
+      "cx_gene_pb": 0.1, 
+      "fitness_metrics": ["rmse"],
+      "fit_intercept": true,
+      "regression_method": "stlsq",
+      "regression_alpha": 1e-10,
+      "regression_threshold": 1e-5,
+      "regression_refit": true,
+      "random_seed": 0,
+      "verbose": true
+    }
+  },  
+  "weak_form": {
+      "balance": 1.0,
+      "penalty_lp": 0.0001,
+      "n_generations": 200
   }
 }
