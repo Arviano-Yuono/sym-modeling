@@ -12,6 +12,7 @@ src/sym_modeling/domains/fem/
   io/hyperelastic.py      # synthetic/tutorial hyperelastic CSV generation
   dolfinx.py              # DOLFINx simulation helper API
   forward_benchmark.py    # forward FEM benchmark utilities
+  forward_comparison.py   # generated-vs-reference forward result comparison
   methods/euclid/         # fixed feature-library discovery
   methods/sgeppy/         # geppy-backed generated feature-library discovery
 ```
@@ -68,10 +69,52 @@ The top-level FEM package lazily exports the most common functions, for example:
 
 ```python
 from sym_modeling.domains.fem import (
+    ForwardComparisonConfig,
     loadFemData,
+    compare_forward_results,
     computeCauchyGreenStrain,
     computeJacobian,
     computeStrainInvariants,
     computeStrainInvariantDerivatives,
 )
+```
+
+## Forward Result Comparison
+
+`forward_comparison.py` compares an already-generated forward FEM output root
+against a reference FEM dataset. It does not rerun DOLFINx; it consumes the
+shared CSV step folders and writes metrics, summaries, and field plots.
+
+```bash
+uv run sym-fem-forward-compare \
+  --forward-root output/forward_sgeppy/1e-4/ih \
+  --reference-root dataset/fem_data/plate_hole_fenics/IH
+```
+
+By default, outputs are written to `<forward-root>/comparison/`:
+
+```text
+comparison_summary.json
+comparison_metrics.csv
+reaction_comparison.png
+step_10_displacement_umag.png
+step_10_displacement_ux.png
+step_10_Fnorm.png
+step_10_Fxx.png
+step_10_Pnorm.png
+step_10_Pxx.png
+...
+```
+
+The comparator automatically uses numeric load-step folders present in both
+roots, sorted numerically. Use repeated `--load-step` arguments to restrict the
+comparison:
+
+```bash
+uv run sym-fem-forward-compare \
+  --forward-root output/forward_euclid/0/AB \
+  --reference-root dataset/fem_data/plate_hole_fenics/AB \
+  --load-step 10 \
+  --load-step 20 \
+  --plot-quantities ux,uy,umag,Fxx,Pxx
 ```

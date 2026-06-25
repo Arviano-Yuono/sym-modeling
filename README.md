@@ -50,6 +50,10 @@ uv run pytest
 This is useful for regular Python development, but it does not install the core
 FEniCSx stack. Use Docker for DOLFINx/PETSc/MPI-backed workflows.
 
+Installed CLI commands are documented in `docs/cli-reference.md`. The main
+commands are `sym-fem-sgeppy`, `sym-fem-euclid`, `sym-fem-forward-compare`,
+`sym-fem-denoise`, `sym-util-print`, and `sym-util-mesh`.
+
 ## FEniCSx Setup
 
 The recommended Linux setup uses the repo Docker image. It installs the compiled
@@ -180,25 +184,25 @@ the configured `output_dir`.
 Use the checked-in configs first:
 
 ```bash
-uv sync --extra dev --extra jax_fem
-uv run --extra jax_fem sym-fem-sgeppy --config configs/sgeppy/nh2.json
+uv sync --extra dev --extra torch_fem
+uv run --extra torch_fem sym-fem-sgeppy --config configs/sgeppy/nh2.json
 ```
 
 Available examples live under `configs/sgeppy/` and inherit shared defaults from
 `configs/sgeppy/_base.json`.
 
-SGEPPY uses `backend="jax"` by default: it reads FEM CSV data, stores
+SGEPPY uses `backend="torch"` by default: it reads FEM CSV data, stores
 calculation arrays as backend arrays, computes `dQ/dF` with autodiff, and
-assembles weak-form matrices with batched backend operations. The alternative
-`backend="torch"` path is CUDA-only and requires `uv sync --extra torch_fem`
-plus a CUDA-capable PyTorch build and NVIDIA driver.
+assembles weak-form matrices with batched backend operations. The Torch path is
+CUDA-only and requires `uv sync --extra torch_fem` plus a CUDA-capable PyTorch
+build and NVIDIA driver. Use `--backend jax` with the `jax_fem` extra when you
+want the JAX backend instead.
 
 Small experiments are usually easiest as CLI overrides:
 
 ```bash
-uv run --extra jax_fem sym-fem-sgeppy \
+uv run --extra torch_fem sym-fem-sgeppy \
   --config configs/sgeppy/nh2.json \
-  --backend jax \
   --loadsteps 10,20 \
   --noise-level 1e-4 \
   --generations 25 \
