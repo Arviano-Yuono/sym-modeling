@@ -1363,12 +1363,12 @@ class SGEPPYTests(unittest.TestCase):
 
         self.assertEqual(config.data_dir, "dataset/fem_data/plate_hole_fenics/AB")
         self.assertEqual(config.loadsteps, [5, 10, 15, 20, 25, 30, 35, 40, 45, 50])
-        self.assertEqual(config.output_dir, "output/sgeppy_results_jax/ab")
+        self.assertEqual(config.output_dir, "output/sgeppy_results_torch/ab")
         self.assertFalse(config.cache_device_outputs)
         self.assertEqual(config.model.binary_operators, ("add", "sub", "mul", "protected_div"))
         self.assertEqual(
             config.model.unary_operators,
-            ("square", "cube", "protected_sqrt", "protected_log", "protected_exp"),
+            ("square", "cube", "protected_sqrt"),
         )
 
     # -- PerGeneEvaluatorCache tests (no JAX required) --
