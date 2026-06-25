@@ -1,0 +1,8 @@
+{
+  "extends": "_base.json",
+  "sgeppy": {
+    "data_dir": "dataset/fem_data/thermocorr/formatted_sampled_3k",
+    "loadsteps": [10, 20, 30, 40],
+    "output_dir": "output/sgeppy/thermocorr/"
+  }
+}
