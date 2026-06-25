@@ -1,0 +1,57 @@
+# ThermoCorr Formatting
+
+ThermoCorr DIC data can be converted into the EUCLID-compatible FEM CSV layout
+with `scripts/format_thermocorr_dataset.py`. The formatter normalizes
+coordinates and displacements for stable deformation-gradient recovery, scales
+the reaction target by the raw specimen height by default, and preserves the full
+mesh boundary when sampling.
+
+## Generate a 10k Sampled Dataset
+
+Run from the repo root:
+
+```bash
+uv run python scripts/format_thermocorr_dataset.py \
+  --input-dir dataset/fem_data/thermocorr \
+  --output-dir dataset/fem_data/thermocorr/formatted_sampled_10k \
+  --sample-nodes 10000 \
+  --overwrite
+```
+
+The default sampler is `boundary_coarsen`, which preserves all inferred
+specimen-boundary nodes plus the full top reaction boundary. Boundary
+preservation has priority over an exact node count, so very small requested
+counts can export more nodes than requested.
+
+For comparison with the older exact-count random sampler, add:
+
+```bash
+--sample-method random
+```
+
+## Generate a Mesh Image
+
+After formatting, generate a mesh PNG with:
+
+```bash
+uv run python scripts/plot_thermocorr_mesh.py \
+  --data-dir dataset/fem_data/thermocorr/formatted_sampled_10k \
+  --step 10 \
+  --output dataset/fem_data/thermocorr/thermocorr_sampled_10k_step10.png \
+  --show-nodes
+```
+
+Change `--step` to inspect another formatted load step.
+
+## Reaction Scaling
+
+By default, `output_reactions.csv` stores:
+
+```text
+force_vfm / raw_y_span
+```
+
+This matches the normalized-coordinate weak-form convention used by the FEM
+loaders. To write the raw measured force instead, pass `--raw-force`. To scale
+by physical area-like dimensions, pass both `--physical-height` and
+`--thickness`.
