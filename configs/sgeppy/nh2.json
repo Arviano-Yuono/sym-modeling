@@ -1,9 +1,9 @@
 {
   "extends": "_base.json",
   "sgeppy": {
-    "data_dir": "dataset/fem_data/fenics_denoised/1e-4/NH2",
+    "data_dir": "dataset/fem_data/fenics_denoised/1e-3/NH2",
     "loadsteps": [10, 20, 30, 40],
-    "output_dir": "output/sgeppy_results_torch/nh2",
+    "output_dir": "output/run/sgeppy_final/nh2/1e-3",
     "cache_size": 1024,
     "cache_device_outputs": false,
     "model": {

@@ -9,9 +9,22 @@
     "cache_enabled": true,
     "cache_size": 1024,
     "cache_device_outputs": false,
+    "admissibility": {
+      "enabled": true,
+      "check_training_energy": true,
+      "check_path_monotonicity": true,
+      "check_reference_stress": true,
+      "num_path_samples": 100,
+      "min_path_stretch": 1.000001,
+      "max_path_stretch": 1000000000.0,
+      "energy_tolerance": 1e-10,
+      "monotonicity_tolerance": 1e-10,
+      "reference_stress_tolerance": 1e-8,
+      "reference_stress_step": 1e-6
+    },
     "weak_form": {
       "balance": 100.0,
-      "penalty_lp": 1e-2,
+      "penalty_lp": 5,
       "p": 0.25,
       "num_increments": 5,
       "factor_increments": 5.0,
