@@ -475,15 +475,22 @@ class TorchStressFeatures:
     """Stress feature columns and valid mask kept on CUDA until needed."""
 
     features_device: object
+    energy_device: object
     valid_mask: np.ndarray
     valid_indices: np.ndarray
     failed: bool = False
     _features_numpy: np.ndarray | None = field(default=None, init=False, repr=False)
+    _energy_numpy: np.ndarray | None = field(default=None, init=False, repr=False)
 
     def features_numpy(self) -> np.ndarray:
         if self._features_numpy is None:
             self._features_numpy = _device_to_numpy(self.features_device)
         return self._features_numpy
+
+    def energy_numpy(self) -> np.ndarray:
+        if self._energy_numpy is None:
+            self._energy_numpy = _device_to_numpy(self.energy_device)
+        return self._energy_numpy
 
     def prediction_numpy(self, theta: np.ndarray) -> np.ndarray:
         torch = require_torch_backend()
@@ -491,10 +498,11 @@ class TorchStressFeatures:
         return _device_to_numpy(self.features_device.matmul(theta_device))
 
     @classmethod
-    def failed_item(cls, num_rows: int, num_columns: int, dtype, device):
+    def failed_item(cls, num_rows: int, num_columns: int, num_energy_columns: int, dtype, device):
         torch = require_torch_backend()
         return cls(
             features_device=torch.zeros((num_rows, num_columns), dtype=dtype, device=device),
+            energy_device=torch.zeros((num_rows // 4, num_energy_columns), dtype=dtype, device=device),
             valid_mask=np.zeros(num_columns, dtype=bool),
             valid_indices=np.zeros(0, dtype=int),
             failed=True,
@@ -699,7 +707,9 @@ def build_population_stress_features(
         if not _feature_batch_is_valid(features, dqdf, value_limit):
             dtype = dqdf.dtype
             device = dqdf.device
-            stress_items.append(TorchStressFeatures.failed_item(dataset.target_vector.size, num_columns, dtype, device))
+            stress_items.append(
+                TorchStressFeatures.failed_item(dataset.target_vector.size, num_columns, len(individual), dtype, device)
+            )
             continue
         filter_start = time.perf_counter()
         columns = stress_columns_from_dqdf(dqdf)
@@ -720,6 +730,7 @@ def build_population_stress_features(
         stress_items.append(
             TorchStressFeatures(
                 features_device=features_device,
+                energy_device=features,
                 valid_mask=valid_mask,
                 valid_indices=np.flatnonzero(valid_mask[: len(individual)]),
             )

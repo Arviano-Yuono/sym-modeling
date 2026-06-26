@@ -48,11 +48,55 @@ class WeakFormConfig:
     threshold_iter: float = 1e-6
     threshold: float = 1e-2
 
+
+@dataclass
+class AdmissibilityConfig:
+    enabled: bool = False
+    check_training_energy: bool = True
+    check_path_monotonicity: bool = True
+    check_reference_stress: bool = True
+    num_path_samples: int = 75
+    min_path_stretch: float = 1.01
+    max_path_stretch: float = 1e9
+    energy_tolerance: float = 1e-10
+    monotonicity_tolerance: float = 1e-10
+    reference_stress_tolerance: float = 1e-8
+    reference_stress_step: float = 1e-6
+
+    def __post_init__(self) -> None:
+        self.enabled = bool(self.enabled)
+        self.check_training_energy = bool(self.check_training_energy)
+        self.check_path_monotonicity = bool(self.check_path_monotonicity)
+        self.check_reference_stress = bool(self.check_reference_stress)
+        self.num_path_samples = int(self.num_path_samples)
+        self.min_path_stretch = float(self.min_path_stretch)
+        self.max_path_stretch = float(self.max_path_stretch)
+        self.energy_tolerance = float(self.energy_tolerance)
+        self.monotonicity_tolerance = float(self.monotonicity_tolerance)
+        self.reference_stress_tolerance = float(self.reference_stress_tolerance)
+        self.reference_stress_step = float(self.reference_stress_step)
+        if self.num_path_samples < 2:
+            raise ValueError("admissibility.num_path_samples must be at least 2.")
+        if self.min_path_stretch <= 1.0:
+            raise ValueError("admissibility.min_path_stretch must be greater than 1.0.")
+        if self.max_path_stretch < self.min_path_stretch:
+            raise ValueError("admissibility.max_path_stretch must be at least min_path_stretch.")
+        if self.energy_tolerance < 0.0:
+            raise ValueError("admissibility.energy_tolerance must be non-negative.")
+        if self.monotonicity_tolerance < 0.0:
+            raise ValueError("admissibility.monotonicity_tolerance must be non-negative.")
+        if self.reference_stress_tolerance < 0.0:
+            raise ValueError("admissibility.reference_stress_tolerance must be non-negative.")
+        if self.reference_stress_step <= 0.0:
+            raise ValueError("admissibility.reference_stress_step must be positive.")
+
+
 @dataclass
 class SGEPWorkflowConfig:
     model: SGEPConfig = field(default_factory=SGEPConfig)
     backend: str = "torch"
     weak_form: WeakFormConfig = field(default_factory=WeakFormConfig)
+    admissibility: AdmissibilityConfig = field(default_factory=AdmissibilityConfig)
     data_dir: str | None = None
     loadsteps: list[int] | None = None
     noise_level: float = 0.0
@@ -353,6 +397,15 @@ class SGEPWorkflow:
 
             theta = np.zeros(stress_features.shape[1], dtype=float)
             theta[valid_indices] = theta_valid
+            _raise_if_not_admissible(
+                self.config.admissibility,
+                model,
+                individual,
+                theta,
+                self.dataset,
+                self.config.model.variable_names,
+                training_gene_values=None,
+            )
             active = np.abs(theta) >= self.config.weak_form.threshold
             residual = _residual_vector_from_operators(residual_operators, theta_valid)
             metrics = regression_metrics(
@@ -560,6 +613,18 @@ class SGEPWorkflow:
 
         theta = np.zeros(candidate.stress.features_device.shape[1], dtype=float)
         theta[candidate.valid_indices] = theta_valid
+        try:
+            _raise_if_not_admissible(
+                self.config.admissibility,
+                model,
+                candidate.individual,
+                theta,
+                self.dataset,
+                self.config.model.variable_names,
+                training_gene_values=candidate.stress.energy_numpy(),
+            )
+        except (ArithmeticError, FloatingPointError, ValueError, np.linalg.LinAlgError):
+            return model.failed_evaluation_result()
         active = np.abs(theta) >= self.config.weak_form.threshold
         residual = _residual_vector_from_operators(candidate.residual_operators, theta_valid)
         metrics = regression_metrics(
@@ -1035,6 +1100,185 @@ def _residual_vector_from_operators(
     if not residuals:
         return np.zeros(0, dtype=float)
     return np.concatenate(residuals)
+
+
+def _raise_if_not_admissible(
+    config: AdmissibilityConfig,
+    model: SGEP,
+    individual,
+    theta: np.ndarray,
+    training_dataset: StressDataset | None,
+    variable_names: Sequence[str],
+    training_gene_values: np.ndarray | None = None,
+) -> None:
+    if not config.enabled:
+        return
+
+    value_limit = float("inf")
+    theta = np.asarray(theta, dtype=float)
+    n_gene_terms = min(len(individual), theta.size)
+    reference_values = _reference_gene_values(model, individual, variable_names, n_gene_terms)
+    reference_energy = _energy_from_gene_values(reference_values, theta[:n_gene_terms], value_limit)
+
+    if config.check_reference_stress:
+        reference_stress = _reference_stress_from_energy_difference(
+            config,
+            model,
+            individual,
+            theta[:n_gene_terms],
+            variable_names,
+            n_gene_terms,
+            value_limit,
+        )
+        if not _valid(reference_stress, value_limit) or np.max(np.abs(reference_stress)) > config.reference_stress_tolerance:
+            raise ValueError("SGEPPY individual failed admissibility: nonzero reference stress.")
+
+    if config.check_training_energy and training_dataset is not None:
+        if training_gene_values is None:
+            variables = invariant_variables(training_dataset, variable_names)
+            training_X = _variable_matrix(variables, variable_names)
+            training_gene_values = _gene_value_matrix(model, individual, training_X, n_gene_terms, value_limit)
+        else:
+            training_gene_values = np.asarray(training_gene_values, dtype=float)[:, :n_gene_terms]
+        training_energy = _energy_from_gene_values(training_gene_values, theta[:n_gene_terms], value_limit)
+        normalized = training_energy - reference_energy
+        if not _valid(normalized, value_limit) or np.any(normalized < -config.energy_tolerance):
+            raise ValueError("SGEPPY individual failed admissibility: negative normalized training energy.")
+
+    if config.check_path_monotonicity:
+        path_variables = _canonical_path_variables(config, variable_names)
+        for path_name, variables in path_variables:
+            path_X = _variable_matrix(variables, variable_names)
+            path_gene_values = _gene_value_matrix(model, individual, path_X, n_gene_terms, value_limit)
+            normalized = _energy_from_gene_values(path_gene_values, theta[:n_gene_terms], value_limit) - reference_energy
+            if not _valid(normalized, value_limit) or np.any(normalized < -config.energy_tolerance):
+                raise ValueError("SGEPPY individual failed admissibility: negative normalized %s energy." % path_name)
+            if np.any(np.diff(normalized) < -config.monotonicity_tolerance):
+                raise ValueError("SGEPPY individual failed admissibility: nonmonotone %s energy." % path_name)
+
+
+def _reference_gene_values(
+    model: SGEP,
+    individual,
+    variable_names: Sequence[str],
+    n_gene_terms: int,
+) -> np.ndarray:
+    variables = reference_variables(variable_names)
+    X_ref = _variable_matrix(variables, variable_names)
+    return _gene_value_matrix(model, individual, X_ref, n_gene_terms, float("inf"))
+
+
+def _gene_value_matrix(
+    model: SGEP,
+    individual,
+    X: np.ndarray,
+    n_gene_terms: int,
+    value_limit: float,
+) -> np.ndarray:
+    outputs = model.gene_outputs(individual, X)
+    if n_gene_terms == 0:
+        return np.zeros((X.shape[0], 0), dtype=float)
+    columns = [_as_vector(outputs[index], X.shape[0]) for index in range(n_gene_terms)]
+    values = np.column_stack(columns)
+    if not _valid(values, value_limit):
+        raise ValueError("Invalid SGEPPY admissibility energy values.")
+    return values
+
+
+def _energy_from_gene_values(gene_values: np.ndarray, theta: np.ndarray, value_limit: float) -> np.ndarray:
+    with np.errstate(all="raise"):
+        energy = np.asarray(gene_values, dtype=float).dot(np.asarray(theta, dtype=float))
+    if not _valid(energy, value_limit):
+        raise ValueError("Invalid SGEPPY admissibility energy.")
+    return energy
+
+
+def _reference_stress_from_energy_difference(
+    config: AdmissibilityConfig,
+    model: SGEP,
+    individual,
+    theta: np.ndarray,
+    variable_names: Sequence[str],
+    n_gene_terms: int,
+    value_limit: float,
+) -> np.ndarray:
+    step = float(config.reference_stress_step)
+    reference_F = np.array([1.0, 0.0, 0.0, 1.0], dtype=float)
+    stress = np.zeros(4, dtype=float)
+    for component in range(4):
+        plus_F = reference_F.copy()
+        minus_F = reference_F.copy()
+        plus_F[component] += step
+        minus_F[component] -= step
+        variables = _invariant_variables_from_F(
+            np.vstack((plus_F, minus_F)),
+            variable_names,
+        )
+        gene_values = _gene_value_matrix(
+            model,
+            individual,
+            _variable_matrix(variables, variable_names),
+            n_gene_terms,
+            value_limit,
+        )
+        energy = _energy_from_gene_values(gene_values, theta, value_limit)
+        stress[component] = (energy[0] - energy[1]) / (2.0 * step)
+    return stress
+
+
+def _canonical_path_variables(
+    config: AdmissibilityConfig,
+    variable_names: Sequence[str],
+) -> list[tuple[str, dict[str, np.ndarray]]]:
+    stretches = np.geomspace(
+        float(config.min_path_stretch),
+        float(config.max_path_stretch),
+        int(config.num_path_samples),
+    )
+    compression = 1.0 / stretches
+    zero = np.zeros_like(stretches)
+    one = np.ones_like(stretches)
+    paths = (
+        ("uniaxial_tension", np.column_stack((stretches, zero, zero, one))),
+        ("biaxial_tension", np.column_stack((stretches, zero, zero, stretches))),
+        ("uniaxial_compression", np.column_stack((compression, zero, zero, one))),
+        ("biaxial_compression", np.column_stack((compression, zero, zero, compression))),
+        ("simple_shear", np.column_stack((one, stretches - 1.0, zero, one))),
+        ("pure_shear", np.column_stack((stretches, zero, zero, 1.0 / stretches))),
+    )
+    result = []
+    for name, F in paths:
+        result.append((name, _invariant_variables_from_F(F, variable_names)))
+    return result
+
+
+def _invariant_variables_from_F(F: np.ndarray, variable_names: Sequence[str]) -> dict[str, np.ndarray]:
+    F = np.asarray(F, dtype=float)
+    F11 = F[:, 0]
+    F12 = F[:, 1]
+    F21 = F[:, 2]
+    F22 = F[:, 3]
+    C11 = F11 * F11 + F21 * F21
+    C12 = F11 * F12 + F21 * F22
+    C22 = F12 * F12 + F22 * F22
+    I1 = C11 + C22 + 1.0
+    J = F11 * F22 - F12 * F21
+    I3 = J * J
+    I2 = C11 + C22 + I3
+    K1 = I1 * np.power(I3, -1.0 / 3.0) - 3.0
+    K2 = I2 * np.power(I3, -2.0 / 3.0) - 3.0
+    values = {
+        "I1": I1,
+        "I2": I2,
+        "I3": I3,
+        "J": J,
+        "Jm1": J - 1.0,
+        "K1": K1,
+        "K2": K2,
+        "logI13": np.log(K1 / 3.0 + 1.0),
+        "logI23": np.log(K2 / 3.0 + 1.0),
+    }
+    return {name: values[name] for name in variable_names}
 
 
 def _device_to_numpy(value) -> np.ndarray:

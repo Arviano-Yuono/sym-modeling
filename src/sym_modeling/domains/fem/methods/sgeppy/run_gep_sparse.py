@@ -6,7 +6,7 @@ from dataclasses import fields
 from pathlib import Path
 
 from .sgep import SGEPConfig
-from .workflow import SGEPWorkflow, SGEPWorkflowConfig, WeakFormConfig
+from .workflow import AdmissibilityConfig, SGEPWorkflow, SGEPWorkflowConfig, WeakFormConfig
 
 
 def _parse_csv(value: str | None) -> tuple[str, ...] | None:
@@ -74,19 +74,24 @@ def config_from_file(path: str | Path) -> SGEPWorkflowConfig:
     values = dict(payload["sgeppy"])
     model_values = dict(values.pop("model", {}))
     weak_form_values = dict(values.pop("weak_form", {}))
+    admissibility_values = dict(values.pop("admissibility", {}))
 
     workflow_fields = {field.name for field in fields(SGEPWorkflowConfig)}
     model_fields = {field.name for field in fields(SGEPConfig)}
     weak_form_fields = {field.name for field in fields(WeakFormConfig)}
+    admissibility_fields = {field.name for field in fields(AdmissibilityConfig)}
     unknown_workflow = sorted(set(values) - workflow_fields)
     unknown_model = sorted(set(model_values) - model_fields)
     unknown_weak_form = sorted(set(weak_form_values) - weak_form_fields)
+    unknown_admissibility = sorted(set(admissibility_values) - admissibility_fields)
     if unknown_workflow:
         raise ValueError("Unknown sgeppy workflow config keys: %s" % ", ".join(unknown_workflow))
     if unknown_model:
         raise ValueError("Unknown sgeppy model config keys: %s" % ", ".join(unknown_model))
     if unknown_weak_form:
         raise ValueError("Unknown sgeppy weak_form config keys: %s" % ", ".join(unknown_weak_form))
+    if unknown_admissibility:
+        raise ValueError("Unknown sgeppy admissibility config keys: %s" % ", ".join(unknown_admissibility))
 
     for key in ("variable_names", "unary_operators", "binary_operators", "fitness_metrics"):
         if key in model_values and model_values[key] is not None:
@@ -95,6 +100,7 @@ def config_from_file(path: str | Path) -> SGEPWorkflowConfig:
         model_values["epsilons"] = tuple(model_values["epsilons"])
     values["model"] = SGEPConfig(**model_values)
     values["weak_form"] = WeakFormConfig(**weak_form_values)
+    values["admissibility"] = AdmissibilityConfig(**admissibility_values)
     return SGEPWorkflowConfig(**values)
 
 
