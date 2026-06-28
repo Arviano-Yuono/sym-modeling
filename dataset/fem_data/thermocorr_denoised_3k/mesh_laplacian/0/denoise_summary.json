@@ -1,0 +1,103 @@
+{
+  "method": "mesh-laplacian",
+  "config": {
+    "data_dir": "dataset/fem_data/thermocorr_3k",
+    "output_dir": "dataset/fem_data/thermocorr_denoised_3k/mesh_laplacian/0",
+    "loadsteps": [
+      10,
+      20,
+      30,
+      40,
+      50,
+      60
+    ],
+    "noise_level": 0.0,
+    "seed": 20260623,
+    "objective": "F_rmse",
+    "alphas": [
+      1e-10,
+      1e-08,
+      1e-06,
+      1e-05,
+      0.0001,
+      0.001,
+      0.01,
+      1.0
+    ],
+    "gammas": [
+      0.1,
+      1.0,
+      10.0,
+      30.0,
+      100.0
+    ],
+    "lambdas": [
+      0.0,
+      1e-06,
+      1e-05,
+      0.0001,
+      0.001,
+      0.01,
+      0.1,
+      1.0,
+      10.0
+    ],
+    "blends": [
+      0.25,
+      0.5,
+      0.75,
+      1.0
+    ],
+    "boundary_weight": 500.0,
+    "preserve_dirichlet": true,
+    "overwrite": true,
+    "method": "mesh-laplacian"
+  },
+  "loadsteps": [
+    10,
+    20,
+    30,
+    40,
+    50,
+    60
+  ],
+  "selected_candidate": {
+    "lambda_smooth": 0.0,
+    "blend": 0.25
+  },
+  "selected_score": 1.9162828116777913e-16,
+  "objective": "F_rmse",
+  "baseline_metrics": {
+    "u_rmse": 0.0,
+    "F_rmse": 0.0,
+    "J_rmse": 0.0,
+    "I1_rmse": 0.0,
+    "I2_rmse": 0.0,
+    "I3_rmse": 0.0
+  },
+  "selected_metrics": {
+    "u_rmse": 9.29261139451598e-19,
+    "F_rmse": 1.9162828116777913e-16,
+    "J_rmse": 2.7062554037790227e-16,
+    "I1_rmse": 6.536581014890977e-16,
+    "I2_rmse": 1.2461784521605608e-15,
+    "I3_rmse": 5.932113655495403e-16,
+    "J_min": 0.9078486563598229,
+    "J_nonpositive_count": 0
+  },
+  "output_paths": {
+    "output_dir": "dataset/fem_data/thermocorr_denoised_3k/mesh_laplacian/0",
+    "manifest_json": "dataset/fem_data/thermocorr_denoised_3k/mesh_laplacian/0/denoise_manifest.json",
+    "step_dirs": {
+      "10": "dataset/fem_data/thermocorr_denoised_3k/mesh_laplacian/0/10",
+      "20": "dataset/fem_data/thermocorr_denoised_3k/mesh_laplacian/0/20",
+      "30": "dataset/fem_data/thermocorr_denoised_3k/mesh_laplacian/0/30",
+      "40": "dataset/fem_data/thermocorr_denoised_3k/mesh_laplacian/0/40",
+      "50": "dataset/fem_data/thermocorr_denoised_3k/mesh_laplacian/0/50",
+      "60": "dataset/fem_data/thermocorr_denoised_3k/mesh_laplacian/0/60"
+    },
+    "summary_json": "dataset/fem_data/thermocorr_denoised_3k/mesh_laplacian/0/denoise_summary.json",
+    "search_csv": "dataset/fem_data/thermocorr_denoised_3k/mesh_laplacian/0/denoise_search.csv",
+    "loadstep_metrics_csv": "dataset/fem_data/thermocorr_denoised_3k/mesh_laplacian/0/denoise_loadstep_metrics.csv"
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "method": "krr",
+  "config": {
+    "data_dir": "dataset/fem_data/thermocorr_3k",
+    "output_dir": "dataset/fem_data/thermocorr_denoised_3k/krr/0",
+    "loadsteps": [
+      10,
+      20,
+      30,
+      40,
+      50,
+      60
+    ],
+    "noise_level": 0.0,
+    "seed": 20260623,
+    "objective": "F_rmse",
+    "alphas": [
+      1e-10,
+      1e-08,
+      1e-06,
+      1e-05,
+      0.0001,
+      0.001,
+      0.01,
+      1.0
+    ],
+    "gammas": [
+      0.1,
+      1.0,
+      10.0,
+      30.0,
+      100.0
+    ],
+    "lambdas": [
+      0.0,
+      1e-06,
+      1e-05,
+      0.0001,
+      0.001,
+      0.01,
+      0.1,
+      1.0,
+      10.0
+    ],
+    "blends": [
+      0.25,
+      0.5,
+      0.75,
+      1.0
+    ],
+    "boundary_weight": 500.0,
+    "preserve_dirichlet": true,
+    "overwrite": true,
+    "method": "krr"
+  },
+  "loadsteps": [
+    10,
+    20,
+    30,
+    40,
+    50,
+    60
+  ],
+  "selected_candidate": {
+    "alpha": 1e-10,
+    "gamma": 100.0,
+    "blend": 0.25
+  },
+  "selected_score": 0.0009764982613060703,
+  "objective": "F_rmse",
+  "baseline_metrics": {
+    "u_rmse": 0.0,
+    "F_rmse": 0.0,
+    "J_rmse": 0.0,
+    "I1_rmse": 0.0,
+    "I2_rmse": 0.0,
+    "I3_rmse": 0.0
+  },
+  "selected_metrics": {
+    "u_rmse": 5.872907190140727e-06,
+    "F_rmse": 0.0009764982613060703,
+    "J_rmse": 0.0013445897206007093,
+    "I1_rmse": 0.0032426495684640144,
+    "I2_rmse": 0.006183798151571919,
+    "I3_rmse": 0.002966355257408139,
+    "J_min": 0.9198796732122011,
+    "J_nonpositive_count": 0
+  },
+  "output_paths": {
+    "output_dir": "dataset/fem_data/thermocorr_denoised_3k/krr/0",
+    "manifest_json": "dataset/fem_data/thermocorr_denoised_3k/krr/0/denoise_manifest.json",
+    "step_dirs": {
+      "10": "dataset/fem_data/thermocorr_denoised_3k/krr/0/10",
+      "20": "dataset/fem_data/thermocorr_denoised_3k/krr/0/20",
+      "30": "dataset/fem_data/thermocorr_denoised_3k/krr/0/30",
+      "40": "dataset/fem_data/thermocorr_denoised_3k/krr/0/40",
+      "50": "dataset/fem_data/thermocorr_denoised_3k/krr/0/50",
+      "60": "dataset/fem_data/thermocorr_denoised_3k/krr/0/60"
+    },
+    "summary_json": "dataset/fem_data/thermocorr_denoised_3k/krr/0/denoise_summary.json",
+    "search_csv": "dataset/fem_data/thermocorr_denoised_3k/krr/0/denoise_search.csv",
+    "loadstep_metrics_csv": "dataset/fem_data/thermocorr_denoised_3k/krr/0/denoise_loadstep_metrics.csv"
+  }
+}

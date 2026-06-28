@@ -30,8 +30,8 @@ output/
 dataset/*
 !dataset/fem_data/
 dataset/fem_data/*
-!dataset/fem_data/plate_hole_fenics/
-!dataset/fem_data/plate_hole_fenics/**
+!dataset/fem_data/plate/
+!dataset/fem_data/thermocorr_denoised_3k/
 generated/
 tmp
 figures

@@ -1,0 +1,22 @@
+{
+  "generator": "sym_modeling.domains.fem.methods.common.denoising",
+  "source_data_dir": "dataset/fem_data/plate_hole_fenics/NH2",
+  "load_steps": [
+    {
+      "load_step": 10,
+      "path": "dataset/fem_data/fenics_denoised/1e-3/NH2/10"
+    },
+    {
+      "load_step": 20,
+      "path": "dataset/fem_data/fenics_denoised/1e-3/NH2/20"
+    },
+    {
+      "load_step": 30,
+      "path": "dataset/fem_data/fenics_denoised/1e-3/NH2/30"
+    },
+    {
+      "load_step": 40,
+      "path": "dataset/fem_data/fenics_denoised/1e-3/NH2/40"
+    }
+  ]
+}

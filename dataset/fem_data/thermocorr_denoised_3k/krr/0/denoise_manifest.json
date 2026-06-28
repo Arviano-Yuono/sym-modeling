@@ -1,0 +1,30 @@
+{
+  "generator": "sym_modeling.domains.fem.methods.common.denoising",
+  "source_data_dir": "dataset/fem_data/thermocorr_3k",
+  "load_steps": [
+    {
+      "load_step": 10,
+      "path": "dataset/fem_data/thermocorr_denoised_3k/krr/0/10"
+    },
+    {
+      "load_step": 20,
+      "path": "dataset/fem_data/thermocorr_denoised_3k/krr/0/20"
+    },
+    {
+      "load_step": 30,
+      "path": "dataset/fem_data/thermocorr_denoised_3k/krr/0/30"
+    },
+    {
+      "load_step": 40,
+      "path": "dataset/fem_data/thermocorr_denoised_3k/krr/0/40"
+    },
+    {
+      "load_step": 50,
+      "path": "dataset/fem_data/thermocorr_denoised_3k/krr/0/50"
+    },
+    {
+      "load_step": 60,
+      "path": "dataset/fem_data/thermocorr_denoised_3k/krr/0/60"
+    }
+  ]
+}

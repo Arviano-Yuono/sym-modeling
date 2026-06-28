@@ -1,0 +1,83 @@
+{
+  "config": {
+    "data_dir": "dataset/fem_data/plate_hole_fenics/NH2",
+    "output_dir": "dataset/fem_data/fenics_denoised/1e-4/NH2",
+    "loadsteps": [
+      10,
+      20,
+      30,
+      40
+    ],
+    "noise_level": 0.0001,
+    "seed": 42,
+    "objective": "F_rmse",
+    "alphas": [
+      1e-10,
+      1e-08,
+      1e-06,
+      1e-05,
+      0.0001,
+      0.001,
+      0.01,
+      1.0
+    ],
+    "gammas": [
+      0.1,
+      1.0,
+      10.0,
+      30.0,
+      100.0
+    ],
+    "blends": [
+      0.25,
+      0.5,
+      0.75,
+      1.0
+    ],
+    "boundary_weight": 500.0,
+    "preserve_dirichlet": true,
+    "overwrite": true
+  },
+  "loadsteps": [
+    10,
+    20,
+    30,
+    40
+  ],
+  "selected_candidate": {
+    "alpha": 1e-10,
+    "gamma": 100.0,
+    "blend": 0.5
+  },
+  "selected_score": 0.005956080639891903,
+  "objective": "F_rmse",
+  "baseline_metrics": {
+    "u_rmse": 9.880107973826537e-05,
+    "F_rmse": 0.007126964067878872,
+    "J_rmse": 0.011983318357017086,
+    "I1_rmse": 0.02387829409021193,
+    "I2_rmse": 0.05500509127553238,
+    "I3_rmse": 0.03230646044670836
+  },
+  "selected_metrics": {
+    "u_rmse": 9.11597208154142e-05,
+    "F_rmse": 0.005956080639891903,
+    "J_rmse": 0.009712261495549065,
+    "I1_rmse": 0.04212779155313902,
+    "I2_rmse": 0.06294626207772505,
+    "I3_rmse": 0.029918189096979575
+  },
+  "output_paths": {
+    "output_dir": "dataset/fem_data/fenics_denoised/1e-4/NH2",
+    "manifest_json": "dataset/fem_data/fenics_denoised/1e-4/NH2/denoise_manifest.json",
+    "step_dirs": {
+      "10": "dataset/fem_data/fenics_denoised/1e-4/NH2/10",
+      "20": "dataset/fem_data/fenics_denoised/1e-4/NH2/20",
+      "30": "dataset/fem_data/fenics_denoised/1e-4/NH2/30",
+      "40": "dataset/fem_data/fenics_denoised/1e-4/NH2/40"
+    },
+    "summary_json": "dataset/fem_data/fenics_denoised/1e-4/NH2/denoise_summary.json",
+    "search_csv": "dataset/fem_data/fenics_denoised/1e-4/NH2/denoise_search.csv",
+    "loadstep_metrics_csv": "dataset/fem_data/fenics_denoised/1e-4/NH2/denoise_loadstep_metrics.csv"
+  }
+}
