@@ -43,6 +43,35 @@ uv run python scripts/plot_thermocorr_mesh.py \
 
 Change `--step` to inspect another formatted load step.
 
+## Generate a Forward FEM Mesh
+
+To export a DOLFINx/Gmsh mesh from an existing formatted ThermoCorr dataset:
+
+```bash
+uv run python scripts/export_thermocorr_mesh.py \
+  --data-dir dataset/fem_data/thermocorr_original/formatted_sampled_3k \
+  --step 1 \
+  --output dataset/fem_data/thermocorr_original/formatted_sampled_3k/mesh_3k.msh \
+  --overwrite
+```
+
+The mesh uses physical tags `LEFT=1`, `BOTTOM=2`, `RIGHT=3`, `TOP=4`,
+`OTHER=5`, and `DOMAIN=11`. `OTHER` covers non-box outer boundary edges, so
+the file has the same facet-tag shape expected by the current plate-hole
+forward benchmark API, even though ThermoCorr loading still needs its own
+benchmark boundary-condition setup.
+
+When regenerating formatted CSVs, the same `.msh` can be written directly:
+
+```bash
+uv run python scripts/format_thermocorr_dataset.py \
+  --input-dir dataset/fem_data/thermocorr_original \
+  --output-dir dataset/fem_data/thermocorr_original/formatted_sampled_3k \
+  --sample-nodes 3000 \
+  --mesh-path dataset/fem_data/thermocorr_original/formatted_sampled_3k/mesh_3k.msh \
+  --overwrite
+```
+
 ## Reaction Scaling
 
 By default, `output_reactions.csv` stores:
