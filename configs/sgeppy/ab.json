@@ -1,9 +1,9 @@
 {
   "extends": "_base.json",
   "sgeppy": {
-    "data_dir": "dataset/fem_data/plate_hole_fenics/AB",
+    "data_dir": "dataset/fem_data/plate/0/AB",
     "loadsteps": [5, 10, 15, 20, 25, 30, 35, 40, 45, 50],
-    "output_dir": "output/sgeppy_results_torch/ab",
+    "output_dir": "output/run/sgeppy_final/0/ab",
     "cache_device_outputs": false
   }
 }
