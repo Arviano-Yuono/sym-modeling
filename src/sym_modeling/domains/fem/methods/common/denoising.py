@@ -7,7 +7,7 @@ import json
 import shutil
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -24,7 +24,18 @@ DEFAULT_GAMMAS = (0.1, 1.0, 10.0, 30.0, 100.0)
 DEFAULT_BLENDS = (0.25, 0.5, 0.75, 1.0)
 DEFAULT_LAPLACIAN_LAMBDAS = (0.0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0)
 METHODS = ("krr", "mesh-laplacian")
-OBJECTIVES = ("u_rmse", "F_rmse", "J_rmse", "I1_rmse", "I2_rmse", "I3_rmse")
+METRIC_OBJECTIVES = ("u_rmse", "F_rmse", "J_rmse", "I1_rmse", "I2_rmse", "I3_rmse")
+OBJECTIVES = (*METRIC_OBJECTIVES, "composite")
+SELECTION_SCOPES = ("global", "per-loadstep")
+DEFAULT_OBJECTIVE_WEIGHTS = {
+    "F_rmse": 1.0,
+    "J_rmse": 1.0,
+    "I1_rmse": 0.5,
+    "I2_rmse": 0.5,
+    "I3_rmse": 0.5,
+}
+BASELINE_NORMALIZATION_FLOOR = 1e-12
+INVALID_J_SELECTION_PENALTY = 1e12
 
 
 @dataclass(frozen=True)
@@ -48,6 +59,8 @@ class DenoiseSearchConfig:
     noise_level: float = 0.0
     seed: int = 20260623
     objective: str = "F_rmse"
+    selection_scope: str = "global"
+    objective_weights: Mapping[str, float] | None = None
     alphas: Sequence[float] = DEFAULT_ALPHAS
     gammas: Sequence[float] = DEFAULT_GAMMAS
     lambdas: Sequence[float] = DEFAULT_LAPLACIAN_LAMBDAS
@@ -62,6 +75,8 @@ class DenoiseSearchConfig:
             raise ValueError("method must be one of: %s." % ", ".join(METHODS))
         if self.objective not in OBJECTIVES:
             raise ValueError("objective must be one of: %s." % ", ".join(OBJECTIVES))
+        if self.selection_scope not in SELECTION_SCOPES:
+            raise ValueError("selection_scope must be one of: %s." % ", ".join(SELECTION_SCOPES))
         if self.noise_level < 0.0:
             raise ValueError("noise_level must be non-negative.")
         if self.boundary_weight <= 0.0:
@@ -80,14 +95,18 @@ class DenoiseSearchConfig:
         for blend in self.blends:
             if float(blend) < 0.0 or float(blend) > 1.0:
                 raise ValueError("blend values must be in [0, 1].")
+        object.__setattr__(self, "objective_weights", _validated_objective_weights(self.objective_weights))
 
 
 @dataclass(frozen=True)
 class DenoiseResult:
     config: DenoiseSearchConfig
     loadsteps: tuple[int, ...]
-    selected_candidate: DenoiseCandidate | MeshLaplacianCandidate
+    selected_candidate: DenoiseCandidate | MeshLaplacianCandidate | None
     selected_score: float
+    selection_scope: str
+    selected_candidates_by_loadstep: dict[str, dict[str, float]]
+    selected_scores_by_loadstep: dict[str, float]
     baseline_metrics: dict[str, float]
     search_rows: list[dict]
     loadstep_metrics: list[dict]
@@ -228,7 +247,7 @@ def denoise_displacements_mesh_laplacian(
 
 
 def search_denoise_hyperparameters(config: DenoiseSearchConfig) -> DenoiseResult:
-    """Run global denoising hyperparameter search and write the selected dataset."""
+    """Run denoising hyperparameter search and write the selected dataset."""
     data_dir = Path(config.data_dir)
     output_dir = Path(config.output_dir)
     steps = tuple(int(step) for step in (config.loadsteps if config.loadsteps is not None else resolve_loadsteps(data_dir)))
@@ -236,58 +255,107 @@ def search_denoise_hyperparameters(config: DenoiseSearchConfig) -> DenoiseResult
 
     step_inputs = []
     baseline_rows = []
+    baselines_by_step = {}
     for step_index, step in enumerate(steps):
         clean = _load_fem_quiet(data_dir / str(step))
         rng = np.random.default_rng(_loadstep_seed(config.seed, step_index, step, config.noise_level))
         noisy_u = add_displacement_noise(clean.u_nodes, clean.dirichlet_nodes, config.noise_level, rng)
         noisy = _load_fem_quiet(data_dir / str(step), denoised_displacements=noisy_u)
         baseline = _metrics(clean, noisy)
+        baselines_by_step[int(step)] = baseline
         baseline_rows.append({"method": "noisy", "loadstep": int(step), **baseline})
         step_inputs.append((int(step), clean, noisy))
 
     search_rows = []
     for candidate in candidates:
         step_scores = []
+        step_selection_scores = []
         for step, clean, noisy in step_inputs:
             denoised_u = _denoise_candidate(noisy, candidate, config)
             denoised = _load_fem_quiet(data_dir / str(step), denoised_displacements=denoised_u)
             metrics = _metrics(clean, denoised)
             physics = _physics_checks(denoised)
-            step_scores.append(metrics[config.objective])
+            selection_score = _selection_score(config, metrics, baselines_by_step[int(step)])
+            if config.objective in METRIC_OBJECTIVES:
+                step_scores.append(metrics[config.objective])
+            step_selection_scores.append(selection_score)
             search_rows.append(
                 {
                     "method": config.method,
                     "loadstep": int(step),
                     **_candidate_row(candidate),
+                    "selection_score": selection_score,
                     **metrics,
                     **physics,
                 }
             )
 
-        mean_score = float(np.mean(step_scores))
+        mean_selection_score = float(np.mean(step_selection_scores))
+        mean_score = float(np.mean(step_scores)) if step_scores else mean_selection_score
         for row in search_rows[-len(step_inputs) :]:
-            row["mean_%s" % config.objective] = mean_score
+            if config.objective in METRIC_OBJECTIVES:
+                row["mean_%s" % config.objective] = mean_score
+            row["mean_selection_score"] = mean_selection_score
 
     aggregate_rows = _aggregate_search_rows(search_rows, config.objective, config.method)
-    selectable_rows = _valid_physics_rows_or_all(aggregate_rows)
-    selected_aggregate = min(selectable_rows, key=lambda row: row["mean_%s" % config.objective])
-    selected = _candidate_from_row(selected_aggregate, config.method)
-
     loadstep_metrics = []
     denoised_by_step = {}
-    for step, clean, noisy in step_inputs:
-        denoised_u = _denoise_candidate(noisy, selected, config)
-        denoised_by_step[int(step)] = denoised_u
-        denoised = _load_fem_quiet(data_dir / str(step), denoised_displacements=denoised_u)
-        loadstep_metrics.append(
-            {
-                "method": config.method,
-                "loadstep": int(step),
-                **_candidate_row(selected),
-                **_metrics(clean, denoised),
-                **_physics_checks(denoised),
-            }
-        )
+    selected_candidates_by_loadstep: dict[str, dict[str, float]] = {}
+    selected_scores_by_loadstep: dict[str, float] = {}
+    invalid_j_fallback_by_loadstep: dict[str, bool] = {}
+
+    if config.selection_scope == "global":
+        selected_aggregate, invalid_j_fallback = _select_best_row(aggregate_rows, "mean_selection_score")
+        selected = _candidate_from_row(selected_aggregate, config.method)
+        selected_score = float(selected_aggregate["mean_selection_score"])
+
+        for step, clean, noisy in step_inputs:
+            denoised_u = _denoise_candidate(noisy, selected, config)
+            denoised_by_step[int(step)] = denoised_u
+            denoised = _load_fem_quiet(data_dir / str(step), denoised_displacements=denoised_u)
+            metrics = _metrics(clean, denoised)
+            physics = _physics_checks(denoised)
+            loadstep_metrics.append(
+                {
+                    "method": config.method,
+                    "loadstep": int(step),
+                    **_candidate_row(selected),
+                    "selection_score": _selection_score(config, metrics, baselines_by_step[int(step)]),
+                    **metrics,
+                    **physics,
+                }
+            )
+    else:
+        selected = None
+        invalid_j_fallback = False
+        rows_by_step: dict[int, list[dict]] = {}
+        for row in search_rows:
+            rows_by_step.setdefault(int(row["loadstep"]), []).append(row)
+
+        for step, clean, noisy in step_inputs:
+            selected_row, step_invalid_j_fallback = _select_best_row(rows_by_step[int(step)], "selection_score")
+            invalid_j_fallback = invalid_j_fallback or step_invalid_j_fallback
+            invalid_j_fallback_by_loadstep[str(int(step))] = bool(step_invalid_j_fallback)
+            selected_step_candidate = _candidate_from_row(selected_row, config.method)
+            selected_candidates_by_loadstep[str(int(step))] = _candidate_row(selected_step_candidate)
+            selected_scores_by_loadstep[str(int(step))] = float(selected_row["selection_score"])
+
+            denoised_u = _denoise_candidate(noisy, selected_step_candidate, config)
+            denoised_by_step[int(step)] = denoised_u
+            denoised = _load_fem_quiet(data_dir / str(step), denoised_displacements=denoised_u)
+            metrics = _metrics(clean, denoised)
+            physics = _physics_checks(denoised)
+            loadstep_metrics.append(
+                {
+                    "method": config.method,
+                    "loadstep": int(step),
+                    **_candidate_row(selected_step_candidate),
+                    "selection_score": _selection_score(config, metrics, baselines_by_step[int(step)]),
+                    **metrics,
+                    **physics,
+                }
+            )
+        selected_score = float(np.mean(list(selected_scores_by_loadstep.values())))
 
     output_paths = write_denoised_fem_dataset(
         data_dir,
@@ -306,8 +374,13 @@ def search_denoise_hyperparameters(config: DenoiseSearchConfig) -> DenoiseResult
         "method": config.method,
         "config": _jsonable_config(config),
         "loadsteps": list(steps),
-        "selected_candidate": asdict(selected),
-        "selected_score": float(selected_aggregate["mean_%s" % config.objective]),
+        "selection_scope": config.selection_scope,
+        "selected_candidate": None if selected is None else asdict(selected),
+        "selected_score": selected_score,
+        "selected_candidates_by_loadstep": selected_candidates_by_loadstep,
+        "selected_scores_by_loadstep": selected_scores_by_loadstep,
+        "invalid_j_fallback": bool(invalid_j_fallback),
+        "invalid_j_fallback_by_loadstep": invalid_j_fallback_by_loadstep,
         "objective": config.objective,
         "baseline_metrics": baseline_metrics,
         "selected_metrics": _mean_metrics(loadstep_metrics),
@@ -324,7 +397,10 @@ def search_denoise_hyperparameters(config: DenoiseSearchConfig) -> DenoiseResult
         config=config,
         loadsteps=steps,
         selected_candidate=selected,
-        selected_score=float(selected_aggregate["mean_%s" % config.objective]),
+        selected_score=selected_score,
+        selection_scope=config.selection_scope,
+        selected_candidates_by_loadstep=selected_candidates_by_loadstep,
+        selected_scores_by_loadstep=selected_scores_by_loadstep,
         baseline_metrics=baseline_metrics,
         search_rows=search_rows,
         loadstep_metrics=loadstep_metrics,
@@ -419,6 +495,56 @@ def _rmse(values: np.ndarray, reference: np.ndarray) -> float:
     return float(np.sqrt(np.mean((np.asarray(values, dtype=float) - np.asarray(reference, dtype=float)) ** 2)))
 
 
+def _validated_objective_weights(weights: Mapping[str, float] | None) -> dict[str, float]:
+    if weights is None:
+        return dict(DEFAULT_OBJECTIVE_WEIGHTS)
+
+    validated = {}
+    for key, value in weights.items():
+        if key not in METRIC_OBJECTIVES:
+            raise ValueError("objective_weights key must be one of: %s." % ", ".join(METRIC_OBJECTIVES))
+        weight = float(value)
+        if weight < 0.0:
+            raise ValueError("objective_weights values must be non-negative.")
+        validated[str(key)] = weight
+    if not validated:
+        raise ValueError("objective_weights must contain at least one metric weight.")
+    if not any(weight > 0.0 for weight in validated.values()):
+        raise ValueError("objective_weights must contain at least one positive weight.")
+    return validated
+
+
+def _selection_score(
+    config: DenoiseSearchConfig,
+    metrics: dict[str, float],
+    baseline_metrics: dict[str, float],
+) -> float:
+    if config.objective != "composite":
+        return float(metrics[config.objective])
+
+    assert config.objective_weights is not None
+    weighted_total = 0.0
+    weight_total = 0.0
+    for metric_name, weight in config.objective_weights.items():
+        if weight == 0.0:
+            continue
+        baseline = max(float(baseline_metrics[metric_name]), BASELINE_NORMALIZATION_FLOOR)
+        weighted_total += float(weight) * float(metrics[metric_name]) / baseline
+        weight_total += float(weight)
+    return float(weighted_total / weight_total)
+
+
+def _select_best_row(rows: list[dict], score_key: str) -> tuple[dict, bool]:
+    valid_rows = [row for row in rows if int(row["J_nonpositive_count"]) == 0]
+    if valid_rows:
+        return min(valid_rows, key=lambda row: float(row[score_key])), False
+    return min(rows, key=lambda row: _invalid_j_rank_score(row, score_key)), True
+
+
+def _invalid_j_rank_score(row: dict, score_key: str) -> float:
+    return float(row[score_key]) + INVALID_J_SELECTION_PENALTY * max(1, int(row["J_nonpositive_count"]))
+
+
 def _build_candidates(config: DenoiseSearchConfig) -> list[DenoiseCandidate | MeshLaplacianCandidate]:
     if config.method == "krr":
         return [
@@ -495,20 +621,20 @@ def _aggregate_search_rows(rows: list[dict], objective: str, method: str) -> lis
     aggregate = []
     for key, group_rows in groups.items():
         row = _candidate_aggregate_key_row(key, method)
-        row.update(
-            {
-                "mean_%s" % objective: float(np.mean([item[objective] for item in group_rows])),
-                "J_min": float(np.min([item["J_min"] for item in group_rows])),
-                "J_nonpositive_count": int(np.sum([item["J_nonpositive_count"] for item in group_rows])),
-            }
-        )
+        row["mean_selection_score"] = float(np.mean([item["selection_score"] for item in group_rows]))
+        if objective in METRIC_OBJECTIVES:
+            row["mean_%s" % objective] = float(np.mean([item[objective] for item in group_rows]))
+        row["J_min"] = float(np.min([item["J_min"] for item in group_rows]))
+        row["J_nonpositive_count"] = int(np.sum([item["J_nonpositive_count"] for item in group_rows]))
         aggregate.append(row)
     return aggregate
 
 
 def _mean_metrics(rows: list[dict]) -> dict[str, float]:
-    metric_keys = [key for key in OBJECTIVES if rows and key in rows[0]]
+    metric_keys = [key for key in METRIC_OBJECTIVES if rows and key in rows[0]]
     metrics = {key: float(np.mean([row[key] for row in rows])) for key in metric_keys}
+    if rows and "selection_score" in rows[0]:
+        metrics["selection_score"] = float(np.mean([row["selection_score"] for row in rows]))
     if rows and "J_min" in rows[0]:
         metrics["J_min"] = float(np.min([row["J_min"] for row in rows]))
     if rows and "J_nonpositive_count" in rows[0]:
@@ -616,8 +742,3 @@ def _candidate_aggregate_key_row(key: tuple[float, ...], method: str) -> dict[st
         lambda_smooth, blend = key
         return {"lambda_smooth": lambda_smooth, "blend": blend}
     raise ValueError("Unsupported denoising method: %s" % method)
-
-
-def _valid_physics_rows_or_all(rows: list[dict]) -> list[dict]:
-    valid = [row for row in rows if int(row.get("J_nonpositive_count", 0)) == 0]
-    return valid if valid else rows
