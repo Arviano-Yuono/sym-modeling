@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 from pathlib import Path
 
@@ -13,11 +14,10 @@ if str(SRC_DIR) not in sys.path:
 
 
 from sym_modeling.domains.fem.methods.common.denoising import (  # noqa: E402
-    DEFAULT_ALPHAS,
-    DEFAULT_BLENDS,
-    DEFAULT_GAMMAS,
-    DEFAULT_LAPLACIAN_LAMBDAS,
+    DEFAULT_OBJECTIVE_WEIGHTS,
     METHODS,
+    OBJECTIVES,
+    SELECTION_SCOPES,
     DenoiseSearchConfig,
     search_denoise_hyperparameters,
 )
@@ -25,6 +25,33 @@ from sym_modeling.domains.fem.methods.common.denoising import (  # noqa: E402
 
 DEFAULT_MODELS = ("gt", "hw", "ih", "nh2", "nh4", "ab")
 DEFAULT_NOISES = ("1e-5", "1e-4", "1e-3")
+BROAD_KRR_ALPHAS = (1e-10, 1e-8, 1e-7, 3e-7, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 1e-3, 1e-2)
+BROAD_KRR_GAMMAS = (0.1, 1.0, 3.0, 10.0, 20.0, 30.0, 50.0, 80.0, 100.0)
+BROAD_BLENDS = (0.25, 0.5, 0.75, 0.85, 0.9, 0.95, 1.0)
+BROAD_LAPLACIAN_LAMBDAS = (
+    0.0,
+    1e-8,
+    3e-8,
+    1e-7,
+    3e-7,
+    1e-6,
+    3e-6,
+    1e-5,
+    3e-5,
+    1e-4,
+    3e-4,
+    1e-3,
+    3e-3,
+    1e-2,
+    3e-2,
+    1e-1,
+    3e-1,
+    1.0,
+    3.0,
+    10.0,
+    30.0,
+    100.0,
+)
 MODEL_DIRS = {
     "gt": "GT",
     "hw": "HW",
@@ -58,6 +85,24 @@ def _method_label(method: str) -> str:
     return method.replace("-", "_")
 
 
+def _parse_objective_weights(value: str | None) -> dict[str, float] | None:
+    if value is None or value.strip() == "":
+        return None
+    weights = {}
+    for part in value.split(","):
+        text = part.strip()
+        if not text:
+            continue
+        if "=" in text:
+            key, raw_weight = text.split("=", 1)
+        elif ":" in text:
+            key, raw_weight = text.split(":", 1)
+        else:
+            raise ValueError("Objective weights must use metric=value entries.")
+        weights[key.strip()] = float(raw_weight.strip())
+    return weights
+
+
 def _output_dir(
     output_root: Path,
     method: str,
@@ -80,6 +125,8 @@ def _output_dir(
 
 
 def _candidate_fields(candidate) -> dict[str, float | str]:
+    if candidate is None:
+        return {}
     fields = {}
     for name in ("alpha", "gamma", "lambda_smooth", "blend"):
         if hasattr(candidate, name):
@@ -143,7 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--methods",
-        default="krr",
+        default="krr,mesh-laplacian",
         help="Comma-separated methods: krr,mesh-laplacian. Use both to compare denoisers.",
     )
     parser.add_argument(
@@ -154,25 +201,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--loadsteps", default=None, help="Optional comma-separated load steps applied to every model.")
     parser.add_argument("--seed", type=int, default=20260623, help="Base seed for deterministic artificial noise.")
-    parser.add_argument("--objective", default="F_rmse", help="Metric minimized during denoising search.")
+    parser.add_argument(
+        "--objective",
+        choices=OBJECTIVES,
+        default="composite",
+        help="Metric minimized during denoising search.",
+    )
+    parser.add_argument(
+        "--selection-scope",
+        choices=SELECTION_SCOPES,
+        default="per-loadstep",
+        help="Select one candidate globally or independently per load step.",
+    )
+    parser.add_argument(
+        "--objective-weights",
+        default=",".join("%s=%g" % (key, value) for key, value in DEFAULT_OBJECTIVE_WEIGHTS.items()),
+        help="Comma-separated metric weights for --objective composite.",
+    )
     parser.add_argument(
         "--alphas",
-        default=",".join("%g" % value for value in DEFAULT_ALPHAS),
+        default=",".join("%g" % value for value in BROAD_KRR_ALPHAS),
         help="Comma-separated KRR alpha values.",
     )
     parser.add_argument(
         "--gammas",
-        default=",".join("%g" % value for value in DEFAULT_GAMMAS),
+        default=",".join("%g" % value for value in BROAD_KRR_GAMMAS),
         help="Comma-separated KRR RBF gamma values.",
     )
     parser.add_argument(
         "--lambdas",
-        default=",".join("%g" % value for value in DEFAULT_LAPLACIAN_LAMBDAS),
+        default=",".join("%g" % value for value in BROAD_LAPLACIAN_LAMBDAS),
         help="Comma-separated mesh-Laplacian smoothness values.",
     )
     parser.add_argument(
         "--blends",
-        default=",".join("%g" % value for value in DEFAULT_BLENDS),
+        default=",".join("%g" % value for value in BROAD_BLENDS),
         help="Comma-separated blend values between noisy and denoised displacement.",
     )
     parser.add_argument("--boundary-weight", type=float, default=500.0, help="KRR sample weight for constrained nodes.")
@@ -202,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     gammas = _parse_csv_floats(args.gammas)
     lambdas = _parse_csv_floats(args.lambdas)
     blends = _parse_csv_floats(args.blends)
+    objective_weights = _parse_objective_weights(args.objective_weights)
     summary_rows = []
 
     invalid_methods = [method for method in methods if method not in METHODS]
@@ -233,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
                             "dataset": dataset_name,
                             "model": model_dir or "",
                             "noise_level": float(noise),
+                            "selection_scope": str(args.selection_scope),
                             "output_dir": str(target_dir),
                         }
                     )
@@ -245,6 +310,8 @@ def main(argv: list[str] | None = None) -> int:
                     noise_level=float(noise),
                     seed=int(args.seed),
                     objective=str(args.objective),
+                    selection_scope=str(args.selection_scope),
+                    objective_weights=objective_weights,
                     alphas=alphas,
                     gammas=gammas,
                     lambdas=lambdas,
@@ -272,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
                             "dataset": dataset_name,
                             "model": model_dir or "",
                             "noise_level": float(noise),
+                            "selection_scope": str(args.selection_scope),
                             "output_dir": str(target_dir),
                             "error": str(exc),
                         }
@@ -298,7 +366,18 @@ def main(argv: list[str] | None = None) -> int:
                     "noise_level": float(noise),
                     "seed": int(args.seed),
                     "objective": str(args.objective),
+                    "selection_scope": str(args.selection_scope),
                     "selected_score": float(result.selected_score),
+                    "selected_candidates_by_loadstep": json.dumps(
+                        result.selected_candidates_by_loadstep,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "selected_scores_by_loadstep": json.dumps(
+                        result.selected_scores_by_loadstep,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
                     "output_dir": result.output_dir,
                     "summary_path": result.summary_path,
                     **_candidate_fields(result.selected_candidate),

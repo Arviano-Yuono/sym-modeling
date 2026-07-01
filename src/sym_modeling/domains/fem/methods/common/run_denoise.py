@@ -9,6 +9,7 @@ from sym_modeling.domains.fem.methods.common.denoising import (
     DEFAULT_LAPLACIAN_LAMBDAS,
     METHODS,
     OBJECTIVES,
+    SELECTION_SCOPES,
     DenoiseSearchConfig,
     MeshLaplacianCandidate,
     search_denoise_hyperparameters,
@@ -27,6 +28,24 @@ def _parse_float_csv(value: str | None) -> tuple[float, ...]:
     return tuple(float(part.strip()) for part in value.split(",") if part.strip())
 
 
+def _parse_objective_weights(value: str | None) -> dict[str, float] | None:
+    if value is None or value.strip() == "":
+        return None
+    weights = {}
+    for part in value.split(","):
+        text = part.strip()
+        if not text:
+            continue
+        if "=" in text:
+            key, raw_weight = text.split("=", 1)
+        elif ":" in text:
+            key, raw_weight = text.split(":", 1)
+        else:
+            raise ValueError("Objective weights must use metric=value entries.")
+        weights[key.strip()] = float(raw_weight.strip())
+    return weights
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate a denoised FEM CSV dataset.")
     parser.add_argument("--method", choices=METHODS, default="krr", help="Denoising method. Defaults to KRR.")
@@ -36,6 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--noise-level", type=float, default=0.0, help="Artificial displacement noise level to add first.")
     parser.add_argument("--seed", type=int, default=20260623, help="Base seed for deterministic artificial noise.")
     parser.add_argument("--objective", choices=OBJECTIVES, default="F_rmse", help="Metric minimized during search.")
+    parser.add_argument(
+        "--selection-scope",
+        choices=SELECTION_SCOPES,
+        default="global",
+        help="Select one candidate globally or independently per load step.",
+    )
+    parser.add_argument(
+        "--objective-weights",
+        default=None,
+        help="Comma-separated metric weights for --objective composite, e.g. F_rmse=1,J_rmse=1,I1_rmse=0.5.",
+    )
     parser.add_argument(
         "--alphas",
         default=",".join("%g" % value for value in DEFAULT_ALPHAS),
@@ -72,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         noise_level=float(args.noise_level),
         seed=int(args.seed),
         objective=str(args.objective),
+        selection_scope=str(args.selection_scope),
+        objective_weights=_parse_objective_weights(args.objective_weights),
         alphas=_parse_float_csv(args.alphas),
         gammas=_parse_float_csv(args.gammas),
         lambdas=_parse_float_csv(args.lambdas),
@@ -82,7 +114,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     result = search_denoise_hyperparameters(config)
     candidate = result.selected_candidate
-    if isinstance(candidate, MeshLaplacianCandidate):
+    if candidate is None:
+        message = "[fem-denoise] selected method=%s scope=%s %s=%.6e"
+        values = (config.method, config.selection_scope, config.objective, result.selected_score)
+    elif isinstance(candidate, MeshLaplacianCandidate):
         message = "[fem-denoise] selected method=%s lambda_smooth=%g blend=%g %s=%.6e"
         values = (config.method, candidate.lambda_smooth, candidate.blend, config.objective, result.selected_score)
     else:
