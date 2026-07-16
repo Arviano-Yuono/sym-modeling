@@ -19,12 +19,50 @@ from sym_modeling.domains.fem.io.csv_loader import loadFemData
 from sym_modeling.domains.fem.methods.common.stress_data import resolve_loadsteps
 
 
-DEFAULT_ALPHAS = (1e-10, 1e-8, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1.0)
-DEFAULT_GAMMAS = (0.1, 1.0, 10.0, 30.0, 100.0)
-DEFAULT_BLENDS = (0.25, 0.5, 0.75, 1.0)
-DEFAULT_LAPLACIAN_LAMBDAS = (0.0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0)
+DEFAULT_ALPHAS = (
+    1e-10,
+    1e-8,
+    1e-7,
+    3e-7,
+    1e-6,
+    3e-6,
+    1e-5,
+    3e-5,
+    1e-4,
+    1e-3,
+    1e-2,
+    1e-1,
+    1.0,
+)
+DEFAULT_GAMMAS = (0.03, 0.1, 0.3, 1.0, 3.0, 10.0, 20.0, 30.0, 50.0, 80.0, 100.0, 300.0)
+DEFAULT_BLENDS = (0.25, 0.5, 0.75, 0.85, 0.9, 0.95, 1.0)
+DEFAULT_LAPLACIAN_LAMBDAS = (
+    0.0,
+    1e-8,
+    3e-8,
+    1e-7,
+    3e-7,
+    1e-6,
+    3e-6,
+    1e-5,
+    3e-5,
+    1e-4,
+    3e-4,
+    1e-3,
+    3e-3,
+    1e-2,
+    3e-2,
+    1e-1,
+    3e-1,
+    1.0,
+    3.0,
+    10.0,
+    30.0,
+    100.0,
+)
 METHODS = ("krr", "mesh-laplacian")
 METRIC_OBJECTIVES = ("u_rmse", "F_rmse", "J_rmse", "I1_rmse", "I2_rmse", "I3_rmse")
+DIAGNOSTIC_METRICS = ("grad_u_rms",)
 OBJECTIVES = (*METRIC_OBJECTIVES, "composite")
 SELECTION_SCOPES = ("global", "per-loadstep")
 DEFAULT_OBJECTIVE_WEIGHTS = {
@@ -267,11 +305,21 @@ def search_denoise_hyperparameters(config: DenoiseSearchConfig) -> DenoiseResult
         step_inputs.append((int(step), clean, noisy))
 
     search_rows = []
+    cached_smoothing_key: tuple[float, ...] | None = None
+    smoothed_displacements_by_step: dict[int, np.ndarray] = {}
     for candidate in candidates:
+        smoothing_key = _candidate_smoothing_key(candidate)
+        if smoothing_key != cached_smoothing_key:
+            cached_smoothing_key = smoothing_key
+            smoothed_displacements_by_step.clear()
         step_scores = []
         step_selection_scores = []
         for step, clean, noisy in step_inputs:
-            denoised_u = _denoise_candidate(noisy, candidate, config)
+            smoothed_u = smoothed_displacements_by_step.get(int(step))
+            if smoothed_u is None:
+                smoothed_u = _denoise_candidate(noisy, replace(candidate, blend=1.0), config)
+                smoothed_displacements_by_step[int(step)] = smoothed_u
+            denoised_u = _blend_displacements(noisy.u_nodes, smoothed_u, candidate.blend)
             denoised = _load_fem_quiet(data_dir / str(step), denoised_displacements=denoised_u)
             metrics = _metrics(clean, denoised)
             physics = _physics_checks(denoised)
@@ -416,6 +464,42 @@ def search_krr_hyperparameters(config: DenoiseSearchConfig) -> DenoiseResult:
     return search_denoise_hyperparameters(replace(config, method="krr"))
 
 
+def write_artificially_noised_fem_dataset(
+    data_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    loadsteps: Sequence[int] | None = None,
+    noise_level: float,
+    seed: int = 20260623,
+    overwrite: bool = False,
+) -> dict[str, str]:
+    """Write one deterministic noisy realization as a SGEPPY-ready dataset."""
+    data_dir = Path(data_dir)
+    if float(noise_level) < 0.0:
+        raise ValueError("noise_level must be non-negative.")
+    steps = tuple(int(step) for step in (loadsteps if loadsteps is not None else resolve_loadsteps(data_dir)))
+    noisy_displacements_by_step = {}
+    for step_index, step in enumerate(steps):
+        clean = _load_fem_quiet(data_dir / str(step))
+        rng = np.random.default_rng(_loadstep_seed(seed, step_index, step, noise_level))
+        noisy_displacements_by_step[int(step)] = add_displacement_noise(
+            clean.u_nodes,
+            clean.dirichlet_nodes,
+            float(noise_level),
+            rng,
+        )
+
+    return _write_fem_displacement_dataset(
+        data_dir,
+        output_dir,
+        noisy_displacements_by_step,
+        overwrite=overwrite,
+        displacement_kind="artificially_noised",
+        manifest_name="noise_manifest.json",
+        manifest_extra={"noise_level": float(noise_level), "seed": int(seed)},
+    )
+
+
 def write_denoised_fem_dataset(
     data_dir: str | Path,
     output_dir: str | Path,
@@ -424,6 +508,26 @@ def write_denoised_fem_dataset(
     overwrite: bool = False,
 ) -> dict[str, str]:
     """Write a SGEPPY-ready FEM dataset with smoothed nodal displacements."""
+    return _write_fem_displacement_dataset(
+        data_dir,
+        output_dir,
+        denoised_displacements_by_step,
+        overwrite=overwrite,
+        displacement_kind="denoised",
+        manifest_name="denoise_manifest.json",
+    )
+
+
+def _write_fem_displacement_dataset(
+    data_dir: str | Path,
+    output_dir: str | Path,
+    displacements_by_step: Mapping[int, np.ndarray],
+    *,
+    overwrite: bool,
+    displacement_kind: str,
+    manifest_name: str,
+    manifest_extra: Mapping[str, object] | None = None,
+) -> dict[str, str]:
     data_dir = Path(data_dir)
     output_dir = Path(output_dir)
     if output_dir.exists():
@@ -437,29 +541,32 @@ def write_denoised_fem_dataset(
             shutil.copy2(child, output_dir / child.name)
 
     step_paths = {}
-    for step, denoised_u in denoised_displacements_by_step.items():
+    for step, displacement in displacements_by_step.items():
         source_step_dir = data_dir / str(int(step))
         target_step_dir = output_dir / str(int(step))
         shutil.copytree(source_step_dir, target_step_dir)
         nodes_path = target_step_dir / "output_nodes.csv"
         nodes = pd.read_csv(nodes_path)
-        denoised_u = np.asarray(denoised_u, dtype=float)
-        if denoised_u.shape != (len(nodes), 2):
-            raise ValueError("Denoised displacement shape does not match %s." % nodes_path)
-        nodes["ux"] = denoised_u[:, 0]
-        nodes["uy"] = denoised_u[:, 1]
+        displacement = np.asarray(displacement, dtype=float)
+        if displacement.shape != (len(nodes), 2):
+            raise ValueError("Displacement shape does not match %s." % nodes_path)
+        nodes["ux"] = displacement[:, 0]
+        nodes["uy"] = displacement[:, 1]
         nodes.to_csv(nodes_path, index=False)
         step_paths[str(int(step))] = str(target_step_dir)
 
     manifest = {
         "generator": "sym_modeling.domains.fem.methods.common.denoising",
+        "displacement_kind": displacement_kind,
         "source_data_dir": str(data_dir),
         "load_steps": [
             {"load_step": int(step), "path": str(output_dir / str(int(step)))}
-            for step in sorted(denoised_displacements_by_step)
+            for step in sorted(displacements_by_step)
         ],
     }
-    manifest_path = output_dir / "denoise_manifest.json"
+    if manifest_extra is not None:
+        manifest.update(manifest_extra)
+    manifest_path = output_dir / manifest_name
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return {"output_dir": str(output_dir), "manifest_json": str(manifest_path), "step_dirs": step_paths}
 
@@ -488,11 +595,25 @@ def _metrics(clean, candidate) -> dict[str, float]:
         "I1_rmse": _rmse(candidate.I1, clean.I1),
         "I2_rmse": _rmse(candidate.I2, clean.I2),
         "I3_rmse": _rmse(candidate.I3, clean.I3),
+        "grad_u_rms": _displacement_gradient_rms(candidate),
     }
 
 
 def _rmse(values: np.ndarray, reference: np.ndarray) -> float:
     return float(np.sqrt(np.mean((np.asarray(values, dtype=float) - np.asarray(reference, dtype=float)) ** 2)))
+
+
+def _displacement_gradient_rms(dataset) -> float:
+    deformation_gradients = np.asarray(dataset.F, dtype=float).reshape(-1, 2, 2)
+    displacement_gradients = deformation_gradients - np.eye(2, dtype=float)[None, :, :]
+    weights = np.asarray(dataset.qpWeights, dtype=float).reshape(-1)
+    if weights.shape[0] != displacement_gradients.shape[0]:
+        raise ValueError("qpWeights and deformation gradients have incompatible element counts.")
+    weight_total = float(np.sum(weights))
+    if weight_total <= 0.0:
+        raise ValueError("qpWeights must have a positive sum.")
+    squared_norms = np.sum(displacement_gradients**2, axis=(1, 2))
+    return float(np.sqrt(np.sum(weights * squared_norms) / weight_total))
 
 
 def _validated_objective_weights(weights: Mapping[str, float] | None) -> dict[str, float]:
@@ -631,7 +752,7 @@ def _aggregate_search_rows(rows: list[dict], objective: str, method: str) -> lis
 
 
 def _mean_metrics(rows: list[dict]) -> dict[str, float]:
-    metric_keys = [key for key in METRIC_OBJECTIVES if rows and key in rows[0]]
+    metric_keys = [key for key in (*METRIC_OBJECTIVES, *DIAGNOSTIC_METRICS) if rows and key in rows[0]]
     metrics = {key: float(np.mean([row[key] for row in rows])) for key in metric_keys}
     if rows and "selection_score" in rows[0]:
         metrics["selection_score"] = float(np.mean([row["selection_score"] for row in rows]))
@@ -732,6 +853,16 @@ def _candidate_key(row: dict, method: str) -> tuple[float, ...]:
     if method == "mesh-laplacian":
         return (float(row["lambda_smooth"]), float(row["blend"]))
     raise ValueError("Unsupported denoising method: %s" % method)
+
+
+def _candidate_smoothing_key(candidate: DenoiseCandidate | MeshLaplacianCandidate) -> tuple[float, ...]:
+    if isinstance(candidate, DenoiseCandidate):
+        return (float(candidate.alpha), float(candidate.gamma))
+    return (float(candidate.lambda_smooth),)
+
+
+def _blend_displacements(noisy: np.ndarray, smoothed: np.ndarray, blend: float) -> np.ndarray:
+    return (1.0 - float(blend)) * np.asarray(noisy, dtype=float) + float(blend) * np.asarray(smoothed, dtype=float)
 
 
 def _candidate_aggregate_key_row(key: tuple[float, ...], method: str) -> dict[str, float]:

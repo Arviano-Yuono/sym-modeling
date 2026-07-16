@@ -1323,7 +1323,37 @@ def _simplify_final_expression(expression: str, variable_names: Sequence[str]) -
         simplified = sp.simplify(sp.sympify(expression, locals=parser_locals))
     except Exception:
         return expression
-    return str(simplified)
+    return _format_expression_by_coefficient(simplified)
+
+
+def _format_expression_by_coefficient(expression) -> str:
+    terms = list(sp.Add.make_args(expression))
+    if len(terms) <= 1:
+        return str(expression)
+
+    indexed_terms = list(enumerate(terms))
+    indexed_terms.sort(key=lambda item: (-_term_coefficient_magnitude(item[1]), item[0]))
+    return _join_expression_terms([term for _, term in indexed_terms])
+
+
+def _term_coefficient_magnitude(term) -> float:
+    coefficient, _ = term.as_coeff_Mul()
+    try:
+        return abs(float(coefficient))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _join_expression_terms(terms) -> str:
+    parts = []
+    for term in terms:
+        if not parts:
+            parts.append(str(term))
+        elif term.could_extract_minus_sign():
+            parts.append(" - " + str(-term))
+        else:
+            parts.append(" + " + str(term))
+    return "".join(parts)
 
 
 def _reference_energy_offset(model: SGEP, individual=None) -> float:

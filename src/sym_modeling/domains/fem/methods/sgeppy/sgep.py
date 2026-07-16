@@ -466,13 +466,16 @@ class SGEP:
         for index, gene in enumerate(individual[:n_gene_terms]):
             if active[index]:
                 expr = str(gep.simplify(gene, SYMBOLIC_FUNCTIONS)) if simplify else str(gene)
-                parts.append("(%0.12g) * (%s)" % (float(theta[index]), expr))
+                coefficient = float(theta[index])
+                parts.append((abs(coefficient), index, "(%0.12g) * (%s)" % (coefficient, expr)))
         intercept_index = len(individual)
         if self.config.fit_intercept and len(theta) > intercept_index and active[intercept_index]:
-            parts.append("(%0.12g)" % float(theta[intercept_index]))
+            coefficient = float(theta[intercept_index])
+            parts.append((abs(coefficient), intercept_index, "(%0.12g)" % coefficient))
         if not parts:
             return "0"
-        return " + ".join(parts)
+        parts.sort(key=lambda part: (-part[0], part[1]))
+        return " + ".join(part[2] for part in parts)
 
     def _as_matrix(self, X) -> np.ndarray:
         if isinstance(X, Mapping):
