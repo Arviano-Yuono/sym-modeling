@@ -75,9 +75,9 @@ Generate a denoised FEM CSV dataset from an existing clean FEM dataset.
 
 ```bash
 uv run sym-fem-denoise \
-  --data-dir dataset/fem_data/plate_hole_fenics/NH2 \
-  --output-dir output/denoised/NH2 \
-  --noise-level 1e-4
+  --data-dir dataset/fem_data/plate/0/NH2 \
+  --output-dir tmp/sgeppy/nh2_denoised_full/1e-3 \
+  --noise-level 1e-3 --method krr
 ```
 
 Common options:
@@ -88,9 +88,47 @@ Common options:
 - `--loadsteps`: comma-separated load steps; defaults to dataset discovery.
 - `--noise-level`: artificial displacement noise level to add before denoising.
 - `--objective`: metric minimized during parameter search.
+- `--alphas`, `--gammas`, `--lambdas`, `--blends`: denoising grid values. The defaults use a broad grid:
+  KRR searches regularization from `1e-10` to `1`, RBF gamma from `0.03` to `300`, and blends from
+  `0.25` to `1`; mesh-Laplacian smoothness searches `0` through `100`.
 - `--overwrite`: allow replacing an existing output directory.
 
 Use this when testing discovery robustness against noisy displacement fields.
+
+### End-to-end SGEPPY denoising benchmark
+
+Generate fixed artificial-noise datasets, tune KRR denoising against the clean
+kinematics, and run clean/noisy/denoised SGEPPY comparisons with matched random
+seeds for every material model:
+
+```bash
+uv run python scripts/run_sgeppy_denoise_benchmark.py \
+  --clean-data-root dataset/fem_data/plate/0 \
+  --models gt,hw,ih,nh2,nh4,ab \
+  --noises 1e-4,1e-3 \
+  --noise-seeds 20260623 \
+  --sgeppy-seeds 0,1,2,3,4 \
+  --skip-existing --quiet
+```
+
+Use `--dry-run` first because the full SGEPPY matrix can be expensive. The
+script always runs SGEPPY with `noise_level=0` against materialized datasets and
+writes these reports under `--output-root`:
+
+- `benchmark_datasets.csv`: noisy and denoised kinematic errors, first-gradient
+  RMS, and the fractional reduction in `F_rmse`.
+- `benchmark_runs.csv`: expression and fitness from every SGEPPY run.
+- `benchmark_comparisons.csv`: matched-seed structural recovery, coefficient
+  relative error when structures match, and RMSE relative to the clean run.
+
+Use `--stages datasets` to generate only the fixed datasets, or `--stages
+sgeppy` to run discovery later from datasets that already exist.
+
+For large meshes, use `--method mesh-laplacian`; it uses sparse FEM systems and
+scales substantially better than full kernel ridge regression. If KRR emits an
+ill-conditioned-matrix warning, exclude very small `--alphas` and use a focused
+grid such as `--alphas 1e-6,1e-5,1e-4 --gammas 30,50,100`. Blend candidates
+reuse the same fitted smoother and therefore do not trigger additional KRR fits.
 
 ## Utility Commands
 
