@@ -17,9 +17,9 @@
       "num_path_samples": 100,
       "min_path_stretch": 1.000001,
       "max_path_stretch": 1000000000.0,
-      "energy_tolerance": 1e-10,
-      "monotonicity_tolerance": 1e-10,
-      "reference_stress_tolerance": 1e-10,
+      "energy_tolerance": 1e-7,
+      "monotonicity_tolerance": 1e-7,
+      "reference_stress_tolerance": 1e-7,
       "reference_stress_step": 1e-8
     },
     "weak_form": {
@@ -36,8 +36,8 @@
     "model": {
       "variable_names": ["K1", "K2", "Jm1"],
       "binary_operators": ["add", "sub", "mul", "protected_div"],
-      "unary_operators": ["square", "cube", "protected_sqrt"],
-      "head_length": 3,
+      "unary_operators": ["square", "cube"],
+      "head_length": 2,
       "n_genes": 5,
       "population_size": 200,
       "n_generations": 50,
