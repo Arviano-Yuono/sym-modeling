@@ -14,6 +14,10 @@ if str(SRC_DIR) not in sys.path:
 
 
 from sym_modeling.domains.fem.methods.common.denoising import (  # noqa: E402
+    DEFAULT_ALPHAS,
+    DEFAULT_BLENDS,
+    DEFAULT_GAMMAS,
+    DEFAULT_LAPLACIAN_LAMBDAS,
     DEFAULT_OBJECTIVE_WEIGHTS,
     METHODS,
     OBJECTIVES,
@@ -25,33 +29,6 @@ from sym_modeling.domains.fem.methods.common.denoising import (  # noqa: E402
 
 DEFAULT_MODELS = ("gt", "hw", "ih", "nh2", "nh4", "ab")
 DEFAULT_NOISES = ("1e-5", "1e-4", "1e-3")
-BROAD_KRR_ALPHAS = (1e-10, 1e-8, 1e-7, 3e-7, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 1e-3, 1e-2)
-BROAD_KRR_GAMMAS = (0.1, 1.0, 3.0, 10.0, 20.0, 30.0, 50.0, 80.0, 100.0)
-BROAD_BLENDS = (0.25, 0.5, 0.75, 0.85, 0.9, 0.95, 1.0)
-BROAD_LAPLACIAN_LAMBDAS = (
-    0.0,
-    1e-8,
-    3e-8,
-    1e-7,
-    3e-7,
-    1e-6,
-    3e-6,
-    1e-5,
-    3e-5,
-    1e-4,
-    3e-4,
-    1e-3,
-    3e-3,
-    1e-2,
-    3e-2,
-    1e-1,
-    3e-1,
-    1.0,
-    3.0,
-    10.0,
-    30.0,
-    100.0,
-)
 MODEL_DIRS = {
     "gt": "GT",
     "hw": "HW",
@@ -220,22 +197,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--alphas",
-        default=",".join("%g" % value for value in BROAD_KRR_ALPHAS),
+        default=",".join("%g" % value for value in DEFAULT_ALPHAS),
         help="Comma-separated KRR alpha values.",
     )
     parser.add_argument(
         "--gammas",
-        default=",".join("%g" % value for value in BROAD_KRR_GAMMAS),
+        default=",".join("%g" % value for value in DEFAULT_GAMMAS),
         help="Comma-separated KRR RBF gamma values.",
     )
     parser.add_argument(
         "--lambdas",
-        default=",".join("%g" % value for value in BROAD_LAPLACIAN_LAMBDAS),
+        default=",".join("%g" % value for value in DEFAULT_LAPLACIAN_LAMBDAS),
         help="Comma-separated mesh-Laplacian smoothness values.",
     )
     parser.add_argument(
         "--blends",
-        default=",".join("%g" % value for value in BROAD_BLENDS),
+        default=",".join("%g" % value for value in DEFAULT_BLENDS),
         help="Comma-separated blend values between noisy and denoised displacement.",
     )
     parser.add_argument("--boundary-weight", type=float, default=500.0, help="KRR sample weight for constrained nodes.")
